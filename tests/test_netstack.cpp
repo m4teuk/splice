@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "peer/netstack.h"
 
@@ -37,4 +39,23 @@ TEST(Netstack, TcpLoopback) {
 
     EXPECT_TRUE(connected);
     EXPECT_EQ(received, "hello tunnel");
+}
+
+// Regression: lwIP's IPv6 reassembly timer fires ~1s in and used to abort on
+// 64-bit hosts (struct ip6_reass_helper > IP6_FRAG_HLEN). Drive the stack past
+// the cyclic-timer interval with real time elapsing — reaching the end without
+// aborting is the test.
+TEST(Netstack, RunsPastCyclicTimers) {
+    Netstack ns;
+    proto::Ip6 addr{};
+    addr[0] = 0xfd;
+    addr[15] = 1;
+    ns.configure(addr);
+
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(1300)) {
+        ns.check_timeouts();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    SUCCEED();
 }
