@@ -110,7 +110,18 @@ target_include_directories(spl PRIVATE
   ${CMAKE_SOURCE_DIR}/native/include   # cbindgen-generated spl_native.h (later phases)
 )
 # Corrosion names the imported target after the crate (lib) name, spl_native.
-target_link_libraries(spl PRIVATE spl_peer spl_server spl_proto spl_native)
+# (spl_proto arrives transitively via spl_peer/spl_server; listing it again makes
+# the new Apple linker warn about a duplicate library.)
+target_link_libraries(spl PRIVATE spl_peer spl_server spl_native)
+
+# The new Apple linker (ld-prime) warns about duplicate libraries pulled in
+# transitively, e.g. -lSystem from the Rust staticlib. Silence it where the flag
+# exists; a no-op on GNU/other linkers (the check fails and it's skipped).
+include(CheckLinkerFlag)
+check_linker_flag(CXX "-Wl,-no_warn_duplicate_libraries" SPL_HAVE_NO_WARN_DUP_LIBS)
+if(SPL_HAVE_NO_WARN_DUP_LIBS)
+  target_link_options(spl PRIVATE "-Wl,-no_warn_duplicate_libraries")
+endif()
 
 # `cmake --install build --prefix /usr/local` -> /usr/local/bin/spl (see docs/DEPLOY.md).
 install(TARGETS spl RUNTIME DESTINATION bin)

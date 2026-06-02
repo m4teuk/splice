@@ -65,10 +65,17 @@ if [ "${#missing[@]}" -gt 0 ]; then
     die "install them first, then re-run.  Try:\n      $(install_hint)"
 fi
 
-# macOS: point CMake at Homebrew's OpenSSL 3 instead of the system LibreSSL.
-if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
-    brew_ssl="$(brew --prefix openssl@3 2>/dev/null || true)"
-    [ -n "$brew_ssl" ] && export OPENSSL_ROOT_DIR="$brew_ssl"
+# macOS specifics.
+if [ "$(uname -s)" = "Darwin" ]; then
+    # Pin one deployment target for the whole build so the Rust (cc) objects and
+    # the C++ objects agree — otherwise the linker warns "built for newer macOS
+    # version" once per object in the crypto staticlib.
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-$(sw_vers -productVersion 2>/dev/null)}"
+    # Point CMake at Homebrew's OpenSSL 3 instead of the system LibreSSL.
+    if command -v brew >/dev/null 2>&1; then
+        brew_ssl="$(brew --prefix openssl@3 2>/dev/null || true)"
+        [ -n "$brew_ssl" ] && export OPENSSL_ROOT_DIR="$brew_ssl"
+    fi
 fi
 
 # --- 3. ensure an up-to-date Rust (no sudo; rustup installs under ~/.cargo) ---
