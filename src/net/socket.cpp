@@ -112,6 +112,9 @@ Fd tcp_accept(int listen_fd, Endpoint* peer) {
     socklen_t len = sizeof(ss);
     int fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&ss), &len);
     if (fd < 0) return Fd{};
+    // BSD/macOS accept() inherits the listener's O_NONBLOCK; Linux does not. The
+    // pairing handshake/bridge assume blocking sockets, so normalize here.
+    set_nonblocking(fd, false);
     if (peer) *peer = endpoint_from_sockaddr(ss);
     return Fd{fd};
 }
