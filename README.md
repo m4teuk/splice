@@ -70,10 +70,12 @@ uses the saved config. Flags like `--bind`/`--port`/`--cert`/`--key` still overr
 and skip the walkthrough. TLS uses an ephemeral self-signed cert in dev unless you
 supply `--cert`/`--key`.
 
-Pair two devices against that server. On the first:
+Pair two devices. Clients default to the public relay
+`splice.kussowski.dev:443`; pass `--server`/`--port` (or a `[peer]` config) to use
+your own. On the first device:
 
 ```sh
-$ spl pair --server relay.example --port 7777
+$ spl pair
 Pairing code:  3-481922
 On the other device run:  spl pair 3-481922
 ```
@@ -81,7 +83,7 @@ On the other device run:  spl pair 3-481922
 On the second, paste the code (each side names the other for later):
 
 ```sh
-spl pair 3-481922 --server relay.example --port 7777 --name laptop
+spl pair 3-481922 --name laptop
 ```
 
 If the server's TLS certificate doesn't verify (e.g. the dev self-signed cert),
@@ -130,9 +132,9 @@ global_burst = 200000
 # cert = /etc/spl/cert.pem
 # key  = /etc/spl/key.pem
 
-[peer]                   # default relay for pair / chat / send / receive
-addr = relay.example     # for now this defaults to 127.0.0.1
-port = 7777
+[peer]                   # relay for pair / chat / send / receive
+addr = splice.kussowski.dev   # defaults to this public relay
+port = 443
 ```
 
 CLI flags override the config. Connection records live in the same dir, mode 0600.

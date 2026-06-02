@@ -7,8 +7,8 @@
 //   addr = ::
 //   port = 7777
 //   [peer]
-//   addr = relay.example
-//   port = 7777
+//   addr = splice.kussowski.dev
+//   port = 443
 #pragma once
 
 #include <cstdint>

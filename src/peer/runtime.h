@@ -17,8 +17,8 @@
 namespace spl::peer {
 
 struct PeerOpts {
-    std::string server = "127.0.0.1";
-    uint16_t port = 7777;
+    std::string server = "splice.kussowski.dev";
+    uint16_t port = 443;
     bool verbose = false;
 };
 
@@ -26,7 +26,8 @@ struct PeerOpts {
 // when it becomes true.
 extern std::atomic<bool> g_stop;
 
-// Default server/port for peer commands: config [peer] applied over 127.0.0.1:7777.
+// Default server/port for peer commands: config [peer] applied over the public
+// relay (splice.kussowski.dev:443).
 PeerOpts default_peer_opts();
 
 class PeerRuntime {

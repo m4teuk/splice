@@ -332,8 +332,8 @@ void usage() {
         "  spl pair [options]            generate a code and wait for a peer (leader)\n"
         "  spl pair <code> [options]     join using a peer's code (follower)\n"
         "options:\n"
-        "  --server HOST   rendezvous server (default: 127.0.0.1)\n"
-        "  --port N        server port (default: 7777)\n"
+        "  --server HOST   rendezvous server (default: splice.kussowski.dev)\n"
+        "  --port N        server port (default: 443)\n"
         "  --name NAME     accept non-interactively and store under NAME\n"
         "  -v, --verbose");
 }
