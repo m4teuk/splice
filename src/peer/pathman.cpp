@@ -3,6 +3,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "common/bytes.h"
@@ -69,16 +70,27 @@ const char* path_name(Path p) { return p == Path::Direct ? "DIRECT" : "RELAY"; }
 PathManager::PathManager(net::Fd udp, PathConfig cfg)
     : udp_(std::move(udp)),
       cfg_(cfg),
-      wg_(WgTunnel::create(cfg.own_priv, cfg.peer_pub, 1)) {}
+      wg_(WgTunnel::create(cfg.own_priv, cfg.peer_pub, 1)) {
+    if (const char* l = std::getenv("SPL_LOSS")) loss_ = std::atof(l);
+    spl_random_bytes(reinterpret_cast<uint8_t*>(&rng_), sizeof(rng_));
+}
+
+void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
+    if (loss_ > 0.0) {
+        rng_ = rng_ * 6364136223846793005ull + 1442695040888963407ull;  // LCG
+        if (static_cast<double>(rng_ >> 32) / 4294967296.0 < loss_) return;  // drop
+    }
+    send_to(udp_.get(), ep, data);
+}
 
 void PathManager::send_payload(Path path, const Endpoint* direct_to, ByteSpan payload) {
     if (path == Path::Relay) {
         tx_relay_ += payload.size();
         Bytes pkt = proto::encode_relay_up(cfg_.uid, payload);
-        send_to(udp_.get(), cfg_.server, as_span(pkt));
+        emit_udp(cfg_.server, as_span(pkt));
     } else if (direct_to) {
         tx_direct_ += payload.size();
-        send_to(udp_.get(), *direct_to, payload);
+        emit_udp(*direct_to, payload);
     }
 }
 
@@ -93,7 +105,7 @@ void PathManager::send_wg(ByteSpan wg) {
 
 void PathManager::send_register() {
     Bytes pkt = proto::encode_relay_up(cfg_.uid, {});  // empty payload = registration
-    send_to(udp_.get(), cfg_.server, as_span(pkt));
+    emit_udp(cfg_.server, as_span(pkt));
 }
 
 bool PathManager::send_inner(ByteSpan ip_packet) {
@@ -241,7 +253,7 @@ void PathManager::run(std::atomic<bool>& stop) {
                 spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_),
                                  sizeof(whereami_token_));
                 Bytes q = proto::encode_whereami_req(whereami_token_);
-                send_to(udp_.get(), cfg_.server, as_span(q));
+                emit_udp(cfg_.server, as_span(q));
             }
             if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
                 t_callme_ = now;

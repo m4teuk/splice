@@ -171,5 +171,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME file_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/file_it.py $<TARGET_FILE:spl>)
     set_tests_properties(file_integration PROPERTIES TIMEOUT 90)
+
+    # Stress: a large file, many files, and a transfer over a lossy path.
+    add_test(NAME stress_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stress_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(stress_integration PROPERTIES TIMEOUT 180)
   endif()
 endif()

@@ -75,6 +75,7 @@ class PathManager {
     void send_payload(Path path, const Endpoint* direct_to, ByteSpan payload);
     void send_register();
     void update_tx_path(Millis now);
+    void emit_udp(const Endpoint& ep, ByteSpan data);  // central egress (applies SPL_LOSS)
 
     net::Fd udp_;
     PathConfig cfg_;
@@ -93,6 +94,8 @@ class PathManager {
     Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0, t_stats_ = 0;
     // verbose throughput counters (bytes), split by path
     uint64_t tx_direct_ = 0, tx_relay_ = 0, rx_direct_ = 0, rx_relay_ = 0;
+    double loss_ = 0.0;  // SPL_LOSS: fraction of egress packets to drop (testing)
+    uint64_t rng_ = 0;
     uint32_t whereami_token_ = 0;
     uint64_t ping_txid_ = 0;
 };

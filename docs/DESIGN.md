@@ -96,6 +96,50 @@ no privileges. lwIP's `output_ip6` hands packets to the path manager (WireGuard
 encapsulate); decrypted inner packets are fed back via `ip6_input`. The app uses
 lwIP's raw TCP API; `spl send`/`receive` are an nc-style byte pipe over it.
 
+## Disco (path-control) wire format
+
+Peer↔peer datagrams (relayed or direct) are `[channel:1][body]`: channel `0x00`
+is WireGuard, `0x01` is disco. Disco messages:
+
+- `CALLME` `0x01 ‖ ip[16] ‖ port[2]` — "reach me here" (the whereami result), sent
+  over the relay until a direct path is confirmed.
+- `PING` `0x02 ‖ txid[8]` — sent at the peer's candidate address to punch.
+- `PONG` `0x03 ‖ txid[8]` — reply to a PING; receiving one confirms a working
+  round-trip and upgrades the active path to DIRECT.
+
+The path manager keeps the relay mapping and (once known) the direct path warm
+with keepalives, and reverts to the relay if no direct packet arrives for ~3 s;
+WireGuard endpoint roaming migrates the session between paths transparently. For
+tests, `SPL_LOSS=<frac>` drops that fraction of egress UDP packets to exercise
+loss recovery.
+
+## Apps over the tunnel
+
+The app side speaks lwIP TCP to the peer's ULA address. Two apps ship today:
+
+- **`spl chat`** — a bidirectional stdin↔stdout pipe (tunnel TCP port 7771);
+  either side closing tears the whole connection down. Roles come from the stored
+  side: the leader listens, the follower dials.
+- **`spl send` / `receive`** — one-or-more-file transfer (tunnel TCP port 7772).
+  Control messages are `[u32 length][payload]` frames; between an `ACCEPT` and the
+  next frame the sender streams exactly `size` raw bytes:
+
+  ```
+  sender   → receiver   OFFER{relpath, size}      (one per file)
+  receiver → sender     ACCEPT | SKIP | CANCEL
+  sender   → receiver   <size bytes of data>      (only after ACCEPT)
+  ...                   (repeat per file)
+  sender   → receiver   END
+  receiver → sender     DONE                       (whole transfer written)
+  ```
+
+  Directories are expanded recursively into `dir/sub/file` relpaths. The receiver
+  reduces each relpath to a safe path **under the current directory** (`..`,
+  absolute, and empty components stripped; subdirectories created) and never
+  overwrites without a prompt (overwrite / skip / rename / cancel). Streaming is
+  flow-controlled by the lwIP send buffer, and the explicit `DONE` (rather than a
+  FIN) signals success so a close/FIN race can't lose the result.
+
 ## Crypto & dependency stack
 
 - **Rust shim (`native/`)**: WireGuard via `boringtun`, SPAKE2 via the `spake2`

@@ -134,12 +134,19 @@ bool enumerate(const std::string& arg, std::vector<Item>* items, std::string* er
         std::string norm = path;
         while (norm.size() > 1 && norm.back() == '/') norm.pop_back();
         std::string root = rename.empty() ? fs::path(norm).filename().string() : rename;
-        for (auto& e : fs::recursive_directory_iterator(path, ec)) {
-            if (e.is_regular_file()) {
-                std::string sub = fs::relative(e.path(), path, ec).generic_string();
-                items->push_back({e.path().string(), root + "/" + sub,
-                                  static_cast<uint64_t>(e.file_size())});
+        try {
+            for (auto& e : fs::recursive_directory_iterator(
+                     path, fs::directory_options::skip_permission_denied)) {
+                std::error_code fec;
+                if (e.is_regular_file(fec)) {
+                    std::string sub = fs::relative(e.path(), path, fec).generic_string();
+                    items->push_back({e.path().string(), root + "/" + sub,
+                                      static_cast<uint64_t>(e.file_size(fec))});
+                }
             }
+        } catch (const std::exception& ex) {
+            *err = "error reading '" + path + "': " + ex.what();
+            return false;
         }
         return true;
     }
@@ -213,13 +220,27 @@ int send_main(int argc, char** argv) {
     Millis last_prog = 0, t_start = 0;
 
     auto send_next = [&]() {
-        if (idx < items.size()) {
-            Bytes o = encode_offer(items[idx].relpath, items[idx].size);
-            conn->send(as_span(o));
-        } else {
-            Bytes e = one_byte(kEnd);
-            conn->send(as_span(e));
+        // Open the next readable file (re-stating its size), skipping any we can no
+        // longer read, then offer it (or END when none remain).
+        while (idx < items.size()) {
+            file.clear();
+            file.open(items[idx].abspath, std::ios::binary);
+            if (file) {
+                struct stat st;
+                if (::stat(items[idx].abspath.c_str(), &st) == 0)
+                    items[idx].size = static_cast<uint64_t>(st.st_size);
+                cur_open = true;
+                remaining = items[idx].size;
+                prog_done = false;
+                break;
+            }
+            spl::logf("spl send: skipping unreadable '%s'", items[idx].abspath.c_str());
+            ++idx;
         }
+        if (idx < items.size())
+            conn->send(as_span(encode_offer(items[idx].relpath, items[idx].size)));
+        else
+            conn->send(as_span(one_byte(kEnd)));
     };
 
     auto pump = [&]() {
@@ -233,7 +254,10 @@ int send_main(int argc, char** argv) {
             chunk.resize(n);
             file.read(chunk.data(), static_cast<std::streamsize>(n));
             std::streamsize got = file.gcount();
-            if (got <= 0) break;
+            if (got <= 0) {  // file shrank mid-transfer: pad so the receiver gets `size` bytes
+                std::fill(chunk.begin(), chunk.end(), 0);
+                got = static_cast<std::streamsize>(n);
+            }
             conn->send(ByteSpan(reinterpret_cast<uint8_t*>(chunk.data()), static_cast<size_t>(got)));
             remaining -= static_cast<uint64_t>(got);
         }
@@ -265,16 +289,16 @@ int send_main(int argc, char** argv) {
                     if (payload.empty()) continue;
                     uint8_t t = payload[0];
                     if (t == kAccept) {
-                        file.open(items[idx].abspath, std::ios::binary);
-                        remaining = items[idx].size;
-                        cur_open = true;
-                        prog_done = false;
-                        t_start = mono_ms();
+                        t_start = mono_ms();  // file already open from send_next()
                         conn->on_writable = pump;
                         pump();
                     } else if (t == kSkip) {
-                        if (opts.verbose) spl::logf("[send] peer skipped %s",
-                                                    items[idx].relpath.c_str());
+                        if (opts.verbose)
+                            spl::logf("[send] peer skipped %s", items[idx].relpath.c_str());
+                        if (cur_open) {
+                            file.close();
+                            cur_open = false;
+                        }
                         ++idx;
                         send_next();
                     } else if (t == kCancel) {
