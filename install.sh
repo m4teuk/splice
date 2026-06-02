@@ -71,13 +71,35 @@ if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     [ -n "$brew_ssl" ] && export OPENSSL_ROOT_DIR="$brew_ssl"
 fi
 
-# --- 3. bootstrap Rust if needed (no sudo; installs under ~/.cargo) ---
+# --- 3. ensure an up-to-date Rust (no sudo; rustup installs under ~/.cargo) ---
+# Our Cargo.lock is format v4, which needs Cargo >= 1.78. Distro packages (e.g.
+# Debian's /usr/bin/cargo) are often older, so check the version, not just that a
+# cargo exists. ~/.cargo/bin goes first on PATH so rustup's toolchain wins.
 export PATH="$HOME/.cargo/bin:$PATH"
-if ! command -v cargo >/dev/null 2>&1; then
-    say "Rust not found — installing rustup (to ~/.cargo)"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+MIN_CARGO_MINOR=78
+cargo_ok() {
+    command -v cargo >/dev/null 2>&1 || return 1
+    local v major minor
+    v="$(cargo --version 2>/dev/null | awk '{print $2}')"   # e.g. 1.78.0
+    major="${v%%.*}"; minor="${v#*.}"; minor="${minor%%.*}"
+    [ "${major:-0}" -gt 1 ] && return 0
+    [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -ge "$MIN_CARGO_MINOR" ] && return 0
+    return 1
+}
+if ! cargo_ok; then
+    command -v cargo >/dev/null 2>&1 &&
+        warn "found $(cargo --version 2>/dev/null), but splice needs Cargo >= 1.$MIN_CARGO_MINOR (Cargo.lock v4)."
+    if command -v rustup >/dev/null 2>&1; then
+        say "Updating the Rust toolchain via rustup"
+        rustup update stable >/dev/null && rustup default stable >/dev/null
+    else
+        say "Installing an up-to-date Rust toolchain via rustup (to ~/.cargo)"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    fi
     # shellcheck disable=SC1091
-    . "$HOME/.cargo/env"
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    export PATH="$HOME/.cargo/bin:$PATH"
+    cargo_ok || die "could not obtain Cargo >= 1.$MIN_CARGO_MINOR (have: $(cargo --version 2>/dev/null || echo none)). Update Rust and re-run."
 fi
 
 # --- 4. build (Release, no tests) ---
