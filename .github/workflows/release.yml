@@ -33,9 +33,10 @@ jobs:
             asset: spl-linux-x86_64
           - runner: ubuntu-22.04-arm
             asset: spl-linux-aarch64
-          - runner: macos-13          # Intel
-            asset: spl-macos-x86_64
-            macos_target: '10.15'
+          # Intel macOS (macos-13) is intentionally omitted: GitHub's Intel runners
+          # are being deprecated, and Intel Macs fall back to install.sh's
+          # build-from-source path (the x86_64 asset 404s). Re-add a macos-13 entry
+          # with macos_target '10.15' if that ever needs the fast path again.
           - runner: macos-14          # Apple Silicon
             asset: spl-macos-arm64
             macos_target: '11.0'
