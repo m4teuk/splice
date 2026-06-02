@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "net/endpoint.h"
 
@@ -53,6 +54,14 @@ Fd udp_bind(const std::string& host, uint16_t port, std::string* err);
 
 // Resolve host:port (numeric or DNS) to an Endpoint.
 std::optional<Endpoint> resolve(const std::string& host, uint16_t port);
+
+// The local UDP/TCP port a bound socket is using, in host byte order (0 on error).
+uint16_t local_port(int fd);
+
+// The host's own unicast interface addresses, each paired with `port`, for
+// advertising LAN candidates (same-NAT direct connectivity). Loopback and
+// link-local addresses are skipped. Best-effort: empty if enumeration fails.
+std::vector<Endpoint> local_interface_endpoints(uint16_t port);
 
 bool set_nonblocking(int fd, bool nb);
 bool set_recv_timeout(int fd, int ms);

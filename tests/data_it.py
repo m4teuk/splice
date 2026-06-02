@@ -25,6 +25,19 @@ def free_port():
     return p
 
 
+def primary_lan_ip():
+    """A usable non-loopback IPv4, or None — then LAN-direct can't be exercised here."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))  # sends nothing; just resolves the source address
+        ip = s.getsockname()[0]
+    except OSError:
+        ip = None
+    finally:
+        s.close()
+    return ip if ip and not ip.startswith("127.") else None
+
+
 def start_server(port):
     proc = subprocess.Popen(
         [SPL, "server", "--bind", "127.0.0.1", "--port", str(port)],
@@ -125,6 +138,20 @@ def main():
         assert any(p == "RELAY" for p in paths[last_direct + 1:]), \
             f"did not fall back to relay after direct died:\n{fb.stdout}"
         print("  fallback OK: direct died, returned to relay")
+
+        # --- scenario 3: same-NAT peers detect each other and prefer a LAN path ---
+        # Both peers reach the server from 127.0.0.1, so each observes the same
+        # external IP and concludes they sit behind one NAT. Where the host has a
+        # real (non-loopback) interface, they additionally find a working LAN path
+        # and prefer it over hairpinning through the external address.
+        lan = run_datatest(port, ld, fd, ["-v", "--run-seconds", "8"], [], 30)
+        assert "same-NAT peer" in lan.stdout, f"shared NAT not detected:\n{lan.stdout}"
+        assert "over DIRECT" in lan.stdout, f"never went direct:\n{lan.stdout}"
+        if primary_lan_ip():
+            assert "(LAN)" in lan.stdout, f"never preferred a LAN direct path:\n{lan.stdout}"
+            print("  LAN-direct OK: same-NAT detected, direct path over the LAN")
+        else:
+            print("  LAN-direct OK: same-NAT detected (no LAN interface to probe)")
         print("DATAPATH E2E PASSED")
     finally:
         stop(leader)
