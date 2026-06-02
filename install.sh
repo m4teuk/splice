@@ -224,4 +224,4 @@ case ":$PATH:" in
        printf '         export PATH="%s:$PATH"\n' "$PREFIX" >&2 ;;
 esac
 
-say "Done. Run 'spl pair' to get started (uses splice.kussowski.dev:443 by default)."
+say "Done. Run 'spl pair' to get started (or 'spl --help')"
