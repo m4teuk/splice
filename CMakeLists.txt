@@ -112,9 +112,13 @@ target_include_directories(spl PRIVATE
 # Corrosion names the imported target after the crate (lib) name, spl_native.
 target_link_libraries(spl PRIVATE spl_peer spl_server spl_proto spl_native)
 
+# `cmake --install build --prefix /usr/local` -> /usr/local/bin/spl (see docs/DEPLOY.md).
+install(TARGETS spl RUNTIME DESTINATION bin)
+
 # --- tests ---
 if(SPL_BUILD_TESTS)
   enable_testing()
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)  # keep `cmake --install` to just `spl`
   FetchContent_Declare(
     googletest
     GIT_REPOSITORY https://github.com/google/googletest.git

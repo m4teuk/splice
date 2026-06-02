@@ -1,0 +1,50 @@
+# splice relay server — systemd unit.
+#
+# Install:   sudo cp deploy/splice.service /etc/systemd/system/
+#            sudo systemctl daemon-reload && sudo systemctl enable --now splice
+# Edit the domain in the two LoadCredential= lines to match your certificate.
+# See docs/DEPLOY.md for the full runbook.
+
+[Unit]
+Description=splice relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Run as a throwaway, unprivileged user that systemd creates and tears down.
+# No need to create a 'splice' account by hand; the relay keeps no on-disk state.
+DynamicUser=yes
+
+# Bind the privileged port (443) without being root. This single capability is
+# the only privilege the relay needs.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# systemd (as root) reads the Let's Encrypt files and hands the service private,
+# service-only copies under $CREDENTIALS_DIRECTORY (the %d specifier below). The
+# unprivileged process never touches /etc/letsencrypt, and the key is never made
+# world-readable. Credentials are re-read on every (re)start — see DEPLOY.md.
+LoadCredential=cert:/etc/letsencrypt/live/splice.kussowski.dev/fullchain.pem
+LoadCredential=key:/etc/letsencrypt/live/splice.kussowski.dev/privkey.pem
+
+ExecStart=/usr/local/bin/spl server --bind :: --port 443 --cert %d/cert --key %d/key
+
+Restart=on-failure
+RestartSec=2
+
+# --- hardening (relax any single line if startup ever fails) ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
