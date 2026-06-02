@@ -140,23 +140,29 @@ bool PathManager::send_inner(ByteSpan ip_packet) {
     return r.op != WgOp::Err;
 }
 
-void PathManager::pump_wg(WgResult r, Path via) {
+void PathManager::pump_wg(WgResult r, Path via, const Endpoint* from, Millis now) {
     while (r.op == WgOp::WriteToNetwork) {
         send_wg(as_span(r.data));
         r = wg_.decapsulate({});
     }
-    if (r.op == WgOp::WriteToTunnel && on_inner) on_inner(as_span(r.data), via);
+    if (r.op == WgOp::WriteToTunnel) {
+        // Real decrypted data is authenticated, so it is a trustworthy liveness
+        // signal (and may reveal a NAT rebind from a new address).
+        if (via == Path::Direct && from) touch_cand(*from, now);
+        if (on_inner) on_inner(as_span(r.data), via);
+    }
 }
 
-void PathManager::handle_wg(ByteSpan body, Path via, Millis /*now*/) {
-    pump_wg(wg_.decapsulate(body), via);
+void PathManager::handle_wg(ByteSpan body, Path via, const Endpoint* from, Millis now) {
+    pump_wg(wg_.decapsulate(body), via, from, now);
 }
 
-void PathManager::handle_disco(ByteSpan body, const Endpoint* from, Millis /*now*/) {
+void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Millis now) {
     ByteReader r(body);
     const uint8_t dt = r.u8();
     if (!r.ok()) return;
     if (dt == DISCO_CALLME) {
+        if (via != Path::Relay) return;  // candidates are advertised over the relay only
         Endpoint ext{r.array<16>(), r.u16()};
         if (!r.ok()) return;
         std::vector<Endpoint> locals;
@@ -174,20 +180,24 @@ void PathManager::handle_disco(ByteSpan body, const Endpoint* from, Millis /*now
         if (!r.ok() || !from) return;
         Bytes pong = build_inner(CH_DISCO, as_span(build_pong(tx)));
         send_payload(Path::Direct, from, as_span(pong));
+    } else if (dt == DISCO_PONG) {
+        const uint64_t tx = r.u64();
+        // Mark a candidate alive only if the PONG echoes our latest PING token and
+        // comes from a candidate we are actually probing — a sprayed packet from an
+        // unknown source can neither add itself nor keep the direct path alive.
+        if (!r.ok() || tx != ping_txid_ || !from) return;
+        if (DirectCand* c = find_cand(*from)) c->last_rx = now;
     }
-    // PONG (and any other direct datagram) registers liveness in dispatch_inner;
-    // choose_direct() then promotes the best live candidate to the active path.
 }
 
 void PathManager::dispatch_inner(ByteSpan inner, Path via, const Endpoint* from, Millis now) {
     if (inner.empty()) return;
-    if (via == Path::Direct && from) touch_cand(*from, now);
     const uint8_t ch = inner[0];
     ByteSpan body = inner.subspan(1);
     if (ch == CH_WG) {
-        handle_wg(body, via, now);
+        handle_wg(body, via, from, now);
     } else if (ch == CH_DISCO) {
-        handle_disco(body, from, now);
+        handle_disco(body, via, from, now);
     }
 }
 

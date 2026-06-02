@@ -82,10 +82,12 @@ class PathManager {
 
     void process(const Endpoint& src, ByteSpan raw, Millis now);
     void dispatch_inner(ByteSpan inner, Path via, const Endpoint* from, Millis now);
-    void handle_wg(ByteSpan body, Path via, Millis now);
-    void handle_disco(ByteSpan body, const Endpoint* from, Millis now);
+    void handle_wg(ByteSpan body, Path via, const Endpoint* from, Millis now);
+    void handle_disco(ByteSpan body, Path via, const Endpoint* from, Millis now);
 
-    void pump_wg(WgResult r, Path via);  // act on a decapsulate result (send/deliver)
+    // act on a decapsulate result (send/deliver); a direct WriteToTunnel is the
+    // authenticated liveness signal for `from`.
+    void pump_wg(WgResult r, Path via, const Endpoint* from, Millis now);
     void send_wg(ByteSpan wg);
     void send_payload(Path path, const Endpoint* direct_to, ByteSpan payload);
     void send_register();
