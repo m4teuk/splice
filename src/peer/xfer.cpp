@@ -213,7 +213,7 @@ int send_main(int argc, char** argv) {
     Bytes inbuf;
     size_t idx = 0, sent_count = 0;
     std::ifstream file;
-    bool cur_open = false, prog_done = false;
+    bool cur_open = false, prog_done = false, streaming = false;
     uint64_t remaining = 0;
     int result = 1;
     bool tty = isatty(STDERR_FILENO);
@@ -244,7 +244,7 @@ int send_main(int argc, char** argv) {
     };
 
     auto pump = [&]() {
-        if (!conn || !cur_open) return;
+        if (!conn || !streaming) return;  // only while an accepted file is in flight
         std::vector<char> chunk;
         while (remaining > 0) {
             size_t space = conn->sndbuf();
@@ -271,8 +271,8 @@ int send_main(int argc, char** argv) {
             print_progress(tty, &last_prog, t_start, verb, it.relpath, it.size, it.size);
             file.close();
             cur_open = false;
-            conn->on_writable = nullptr;
-            ++sent_count;
+            streaming = false;  // note: do NOT touch conn->on_writable here — pump may be
+            ++sent_count;       // running *as* on_writable, and freeing it is a use-after-free
             ++idx;
             send_next();
         }
@@ -282,6 +282,7 @@ int send_main(int argc, char** argv) {
         rt->peer_addr(), kFilePort,
         [&](TcpConn* c) {
             conn = c;
+            c->on_writable = pump;  // installed once for the connection; gated by `streaming`
             c->on_recv = [&](ByteSpan b) {
                 inbuf.insert(inbuf.end(), b.begin(), b.end());
                 Bytes payload;
@@ -290,7 +291,7 @@ int send_main(int argc, char** argv) {
                     uint8_t t = payload[0];
                     if (t == kAccept) {
                         t_start = mono_ms();  // file already open from send_next()
-                        conn->on_writable = pump;
+                        streaming = true;
                         pump();
                     } else if (t == kSkip) {
                         if (opts.verbose)
