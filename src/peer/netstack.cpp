@@ -97,23 +97,13 @@ void TcpConn::do_close() {
     pcb_ = nullptr;
 }
 
-void TcpConn::maybe_shutdown_tx() {
-    if (tx_shutdown_pending_ && pending_.empty() && pcb_) {
-        tcp_shutdown(pcb_, 0, 1);  // half-close the send direction
-        tx_shutdown_pending_ = false;
-    }
-}
-
-void TcpConn::end_tx() {
-    tx_shutdown_pending_ = true;
-    flush();
-    maybe_shutdown_tx();
-}
-
 void TcpConn::close() {
-    want_close_ = true;
-    flush();
-    if (pending_.empty()) do_close();
+    want_close_ = true;  // tcp_close/tcp_abort must not run inside an lwIP callback,
+    flush();             // so the actual teardown is deferred to poll_close() on the loop
+}
+
+void TcpConn::poll_close() {
+    if (want_close_ && pending_.empty() && pcb_) do_close();
 }
 
 int TcpConn::on_lwip_recv(pbuf* p, int err) {
@@ -134,10 +124,8 @@ int TcpConn::on_lwip_recv(pbuf* p, int err) {
 }
 
 int TcpConn::on_lwip_sent(uint16_t) {
-    flush();
-    maybe_shutdown_tx();
-    if (want_close_ && pending_.empty()) do_close();
-    if (on_writable) on_writable();
+    flush();  // push more queued data now that the send buffer freed up
+    if (!want_close_ && on_writable) on_writable();
     return ERR_OK;
 }
 
@@ -195,8 +183,9 @@ void Netstack::input(ByteSpan ip_packet) {
 void Netstack::check_timeouts() {
     sys_check_timeouts();
     if (netif_) netif_poll(netif_);  // process loopback queue
-    // Reap failed connect attempts so `spl send`'s retry-until-online loop can run
-    // indefinitely without accumulating dead connections.
+    // Perform deferred closes here (off the lwIP callback path), then reap failed
+    // connect attempts so `spl send`'s retry loop doesn't accumulate dead conns.
+    for (auto& c : conns_) c->poll_close();
     conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
                                 [](const std::unique_ptr<TcpConn>& c) {
                                     return c->dead_unconnected();

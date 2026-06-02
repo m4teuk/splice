@@ -30,8 +30,8 @@ class TcpConn {
     explicit TcpConn(tcp_pcb* pcb);
 
     void send(ByteSpan data);  // queues and flushes subject to TCP flow control
-    void end_tx();             // flush, then half-close the send direction (FIN)
-    void close();              // flush then close
+    void close();        // request close; the teardown is deferred to poll_close()
+    void poll_close();   // perform a requested close — called from the loop, never a callback
 
     // lwIP callback handlers (invoked by the static trampolines).
     int on_lwip_recv(pbuf* p, int err);
@@ -50,13 +50,11 @@ class TcpConn {
  private:
     void flush();
     void do_close();
-    void maybe_shutdown_tx();
 
     tcp_pcb* pcb_;
     Bytes pending_;
     bool connected_ = false;  // ever established (connect succeeded or accepted)
     bool want_close_ = false;
-    bool tx_shutdown_pending_ = false;
 };
 
 class Netstack {
