@@ -80,9 +80,9 @@ WireGuard, `0x01` = disco (path control).
 ```
 start on RELAY  (works once both peers register)
   -> whereami learns our external address
-  -> CALLME (over relay) tells the peer where to reach us
-  -> disco PING/PONG probes the peer's address directly
-  -> UPGRADE to DIRECT once a round-trip is confirmed
+  -> CALLME (over relay) tells the peer our external + LAN addresses
+  -> disco PING/PONG probes every candidate directly
+  -> UPGRADE to DIRECT once a round-trip is confirmed (a LAN path is preferred)
   -> FALL BACK to RELAY if the direct path goes quiet (no packets for 3s)
 ```
 
@@ -101,11 +101,18 @@ lwIP's raw TCP API; `spl send`/`receive` are an nc-style byte pipe over it.
 Peer↔peer datagrams (relayed or direct) are `[channel:1][body]`: channel `0x00`
 is WireGuard, `0x01` is disco. Disco messages:
 
-- `CALLME` `0x01 ‖ ip[16] ‖ port[2]` — "reach me here" (the whereami result), sent
-  over the relay until a direct path is confirmed.
-- `PING` `0x02 ‖ txid[8]` — sent at the peer's candidate address to punch.
+- `CALLME` `0x01 ‖ ip[16] ‖ port[2] ‖ count[1] ‖ count×(ip[16] ‖ port[2])` —
+  "reach me here": our external address (the whereami result) followed by our LAN
+  addresses, sent over the relay until a direct path is confirmed.
+- `PING` `0x02 ‖ txid[8]` — sent at each candidate address to punch.
 - `PONG` `0x03 ‖ txid[8]` — reply to a PING; receiving one confirms a working
   round-trip and upgrades the active path to DIRECT.
+
+When both peers report the same external IP they sit behind one NAT, so each
+adopts the other's LAN addresses as extra candidates and prefers a confirmed LAN
+path — two machines on one network talk over the LAN instead of hairpinning
+through the router or relaying. A LAN address that never answers is just ignored:
+every path is WireGuard-encrypted, so a failed probe costs nothing.
 
 The path manager keeps the relay mapping and (once known) the direct path warm
 with keepalives, and reverts to the relay if no direct packet arrives for ~3 s;

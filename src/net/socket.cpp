@@ -2,11 +2,14 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 
@@ -134,6 +137,47 @@ std::optional<Endpoint> resolve(const std::string& host, uint16_t port) {
         out = endpoint_from_sockaddr(ss);
     }
     freeaddrinfo(res);
+    return out;
+}
+
+uint16_t local_port(int fd) {
+    sockaddr_storage ss{};
+    socklen_t len = sizeof(ss);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&ss), &len) != 0) return 0;
+    if (ss.ss_family == AF_INET6) return ntohs(reinterpret_cast<sockaddr_in6*>(&ss)->sin6_port);
+    if (ss.ss_family == AF_INET) return ntohs(reinterpret_cast<sockaddr_in*>(&ss)->sin_port);
+    return 0;
+}
+
+std::vector<Endpoint> local_interface_endpoints(uint16_t port) {
+    std::vector<Endpoint> out;
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return out;
+    for (ifaddrs* p = ifs; p; p = p->ifa_next) {
+        if (!p->ifa_addr || !(p->ifa_flags & IFF_UP) || (p->ifa_flags & IFF_LOOPBACK)) continue;
+        sockaddr_storage ss{};
+        if (p->ifa_addr->sa_family == AF_INET) {
+            const auto* s = reinterpret_cast<const sockaddr_in*>(p->ifa_addr);
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(&s->sin_addr);
+            if (b[0] == 127) continue;                 // loopback 127.0.0.0/8
+            if (b[0] == 169 && b[1] == 254) continue;  // link-local 169.254.0.0/16
+            std::memcpy(&ss, s, sizeof(*s));
+        } else if (p->ifa_addr->sa_family == AF_INET6) {
+            const auto* s = reinterpret_cast<const sockaddr_in6*>(p->ifa_addr);
+            const uint8_t* b = s->sin6_addr.s6_addr;
+            if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) continue;  // link-local fe80::/10
+            bool loop = (b[15] == 1);
+            for (int i = 0; i < 15 && loop; ++i) loop = (b[i] == 0);
+            if (loop) continue;  // loopback ::1
+            std::memcpy(&ss, s, sizeof(*s));
+        } else {
+            continue;
+        }
+        Endpoint e = endpoint_from_sockaddr(ss);
+        e.port = port;
+        if (std::find(out.begin(), out.end(), e) == out.end()) out.push_back(e);
+    }
+    ::freeifaddrs(ifs);
     return out;
 }
 

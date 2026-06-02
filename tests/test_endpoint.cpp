@@ -4,7 +4,10 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <string>
+
 #include "net/endpoint.h"
+#include "net/socket.h"
 
 using namespace spl;
 
@@ -48,4 +51,31 @@ TEST(Endpoint, Ordering) {
     EXPECT_LT(a, b);
     Endpoint c = a;
     EXPECT_EQ(a, c);
+}
+
+TEST(LocalAddr, PortFromBoundSocket) {
+    std::string err;
+    net::Fd fd = net::udp_bind("", 0, &err);
+    ASSERT_TRUE(static_cast<bool>(fd)) << err;
+    EXPECT_NE(net::local_port(fd.get()), 0);  // an ephemeral port was assigned
+}
+
+// LAN-candidate enumeration must tag every address with the requested port and
+// never surface loopback or link-local addresses (a peer can't reach those).
+TEST(LocalAddr, InterfaceEndpointsAreUsable) {
+    const uint16_t port = 51820;
+    auto eps = net::local_interface_endpoints(port);
+    EXPECT_LT(eps.size(), 64u);  // sanity bound
+    for (const auto& e : eps) {
+        EXPECT_TRUE(e.valid());
+        EXPECT_EQ(e.port, port);
+        EXPECT_NE(e.to_string(), "127.0.0.1:" + std::to_string(port));
+        EXPECT_NE(e.to_string(), "[::1]:" + std::to_string(port));
+        if (is_v4_mapped(e.ip)) {
+            EXPECT_NE(e.ip[12], 127);                              // not 127.0.0.0/8
+            EXPECT_FALSE(e.ip[12] == 169 && e.ip[13] == 254);      // not 169.254.0.0/16
+        } else {
+            EXPECT_FALSE(e.ip[0] == 0xfe && (e.ip[1] & 0xc0) == 0x80);  // not fe80::/10
+        }
+    }
 }
