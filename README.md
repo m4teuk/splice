@@ -26,8 +26,28 @@ cmake -S . -B build -G Ninja
 cmake --build build
 ```
 
+### macOS
+
+Install the toolchain with Homebrew (Apple Clang from the Xcode command-line
+tools provides the C++20 compiler):
+
+```sh
+xcode-select --install          # if you don't have the command-line tools yet
+brew install cmake ninja openssl@3 pkg-config rust
+
+git submodule update --init     # vendored lwIP
+
+# Homebrew's OpenSSL isn't on the default search path, so point CMake at it:
+cmake -S . -B build -G Ninja -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+cmake --build build
+```
+
+The linker may print harmless `was built for newer 'macOS' version` warnings for
+the vendored BoringSSL objects; they don't affect the build.
+
 The binary is `build/spl`. lwIP is built from source; OpenSSL is taken from the
-system. The Rust shim is built and linked automatically via Corrosion.
+system (Homebrew on macOS). The Rust shim is built and linked automatically via
+Corrosion.
 
 ## Use
 

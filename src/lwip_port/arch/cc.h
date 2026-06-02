@@ -2,7 +2,11 @@
 #ifndef SPL_ARCH_CC_H
 #define SPL_ARCH_CC_H
 
+#if defined(__APPLE__)
+#include <machine/endian.h>  // BYTE_ORDER / LITTLE_ENDIAN / BIG_ENDIAN on macOS
+#else
 #include <endian.h>  // provides BYTE_ORDER / LITTLE_ENDIAN / BIG_ENDIAN on glibc
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
