@@ -51,12 +51,24 @@ Corrosion.
 
 ## Use
 
-Run a relay server (uses an ephemeral self-signed TLS cert in dev; pass
-`--cert`/`--key` for a real one):
+Run a relay server. The first run with no config walks you through setup (bind
+address, port, rate limits, TLS) — suggesting a default for each that you accept
+with Enter or override — then saves a config file and prints what clients need to
+connect:
 
 ```sh
-spl server --bind :: --port 7777
+$ spl server
+Let's configure your splice relay server.
+Bind address (interface to listen on) [::]:
+Port (TCP for pairing + UDP for relay) [7777]:
+  ... clients reach this server at the address below; put it in their [peer] config
+...
 ```
+
+Re-run setup any time with `spl server --setup`; afterwards a bare `spl server`
+uses the saved config. Flags like `--bind`/`--port`/`--cert`/`--key` still override
+and skip the walkthrough. TLS uses an ephemeral self-signed cert in dev unless you
+supply `--cert`/`--key`.
 
 Pair two devices against that server. On the first:
 
@@ -98,16 +110,23 @@ throughput by path — direct vs relay — and the server shows a live relay sum
 
 ### Config file
 
-To avoid repeating `--server`/`--port`, drop a `config` file in the config dir
-(`$SPL_CONFIG_DIR`, else `$XDG_CONFIG_HOME/spl`, else `~/.config/spl`):
+The config lives in the config dir (`$SPL_CONFIG_DIR`, else `$XDG_CONFIG_HOME/spl`,
+else `~/.config/spl`). `spl server` setup writes the `[server]` section; add a
+`[peer]` section yourself so the peer commands don't need `--server`/`--port`:
 
 ```ini
-[server]      # defaults for `spl server`
+[server]                 # written by `spl server` setup
 addr = ::
 port = 7777
+per_ip_rate = 500
+per_ip_burst = 1000
+global_rate = 100000
+global_burst = 200000
+# cert = /etc/spl/cert.pem
+# key  = /etc/spl/key.pem
 
-[peer]        # default relay for pair / chat / send / receive
-addr = relay.example
+[peer]                   # default relay for pair / chat / send / receive
+addr = relay.example     # for now this defaults to 127.0.0.1
 port = 7777
 ```
 

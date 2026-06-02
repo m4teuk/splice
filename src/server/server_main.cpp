@@ -1,9 +1,13 @@
 #include "server/server_main.h"
 
+#include <unistd.h>
+
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -22,25 +26,94 @@ namespace {
 std::atomic<bool> g_stop{false};
 void on_signal(int) { g_stop.store(true); }
 
+// Suggested values offered during setup — never assumed silently for a fresh run;
+// the operator confirms (or overrides) each one in the walkthrough.
+namespace suggest {
+constexpr const char* addr = "::";
+constexpr uint16_t port = 7777;
+constexpr double per_ip_rate = 500, per_ip_burst = 1000;
+constexpr double global_rate = 100000, global_burst = 200000;
+}  // namespace suggest
+
 void usage() {
     spl::logf(
         "usage: spl server [options]\n"
-        "  --bind HOST     address to bind (default: all interfaces)\n"
-        "  --port N        TCP (pairing) and UDP (relay) port (default: 7777)\n"
+        "  --setup         (re)run the interactive configuration walkthrough\n"
+        "  --bind HOST     address to bind\n"
+        "  --port N        TCP (pairing) and UDP (relay) port\n"
         "  --tcp-port N    override pairing TCP port\n"
         "  --udp-port N    override relay UDP port\n"
         "  --cert FILE     TLS certificate (PEM); ephemeral self-signed if omitted\n"
         "  --key FILE      TLS private key (PEM)\n"
-        "  -v, --verbose   verbose logging");
+        "  -v, --verbose   verbose logging\n"
+        "\n"
+        "With no config and no flags, the first run walks you through setup.");
+}
+
+// Render a number as a plain integer when whole (for prompt defaults).
+std::string num_str(double v) {
+    if (v == static_cast<long long>(v)) return std::to_string(static_cast<long long>(v));
+    return std::to_string(v);
+}
+
+// Prompt with a suggested default; an empty answer accepts the suggestion.
+std::string ask(const std::string& label, const std::string& def) {
+    if (def.empty())
+        std::printf("%s: ", label.c_str());
+    else
+        std::printf("%s [%s]: ", label.c_str(), def.c_str());
+    std::fflush(stdout);
+    std::string line;
+    if (!std::getline(std::cin, line)) return def;  // EOF -> accept the default
+    size_t a = line.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return def;
+    size_t b = line.find_last_not_of(" \t\r\n");
+    return line.substr(a, b - a + 1);
+}
+
+// The address a client should put in its config to reach this server. A wildcard
+// bind tells us nothing routable, so we ask the operator to fill it in.
+std::string client_addr_hint(const std::string& bind) {
+    if (bind.empty() || bind == "::" || bind == "0.0.0.0" || bind == "*")
+        return "<this server's hostname or public IP>";
+    return bind;
+}
+
+ServerConfig run_setup() {
+    std::printf("\nLet's configure your splice relay server.\n");
+    std::printf("Press Enter to accept the [suggested] value, or type your own.\n\n");
+
+    ServerConfig s;
+    s.addr = ask("Bind address (interface to listen on)", suggest::addr);
+    s.port = static_cast<uint16_t>(std::atoi(
+        ask("Port (TCP for pairing + UDP for relay)", std::to_string(suggest::port)).c_str()));
+
+    std::printf("\n  Clients reach this server over the network. Once setup is done,\n");
+    std::printf("  put this in each client's config [peer] section:\n");
+    std::printf("    addr = %s\n    port = %u\n\n", client_addr_hint(s.addr).c_str(), s.port);
+
+    std::printf("Rate limits (cost-control safeguard, not security):\n");
+    s.per_ip_rate = std::atof(ask("  Per-IP packets/sec", num_str(suggest::per_ip_rate)).c_str());
+    s.per_ip_burst = std::atof(ask("  Per-IP burst", num_str(suggest::per_ip_burst)).c_str());
+    s.global_rate = std::atof(ask("  Global packets/sec", num_str(suggest::global_rate)).c_str());
+    s.global_burst = std::atof(ask("  Global burst", num_str(suggest::global_burst)).c_str());
+
+    std::printf("\nTLS certificate (blank = ephemeral self-signed dev cert):\n");
+    s.cert = ask("  Certificate path (PEM)", "");
+    if (!s.cert.empty()) s.key = ask("  Private key path (PEM)", "");
+    return s;
 }
 
 }  // namespace
 
 int server_main(int argc, char** argv) {
     Config cfg = load_config();
-    std::string bind = cfg.server.addr, cert, key;
-    uint16_t port = cfg.server.port ? cfg.server.port : 7777, tcp_port = 0, udp_port = 0;
-    bool verbose = false;
+    const bool have_config = config_exists();
+
+    std::string cli_bind, cli_cert, cli_key;
+    uint16_t cli_port = 0, cli_tcp = 0, cli_udp = 0;
+    bool verbose = false, force_setup = false;
+    bool has_bind = false, has_port = false, has_cert = false, has_key = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -51,30 +124,36 @@ int server_main(int argc, char** argv) {
             }
             return argv[++i];
         };
-        if (a == "--bind") {
+        if (a == "--setup") {
+            force_setup = true;
+        } else if (a == "--bind") {
             auto v = need("--bind");
             if (!v) return 2;
-            bind = v;
+            cli_bind = v;
+            has_bind = true;
         } else if (a == "--port") {
             auto v = need("--port");
             if (!v) return 2;
-            port = static_cast<uint16_t>(std::atoi(v));
+            cli_port = static_cast<uint16_t>(std::atoi(v));
+            has_port = true;
         } else if (a == "--tcp-port") {
             auto v = need("--tcp-port");
             if (!v) return 2;
-            tcp_port = static_cast<uint16_t>(std::atoi(v));
+            cli_tcp = static_cast<uint16_t>(std::atoi(v));
         } else if (a == "--udp-port") {
             auto v = need("--udp-port");
             if (!v) return 2;
-            udp_port = static_cast<uint16_t>(std::atoi(v));
+            cli_udp = static_cast<uint16_t>(std::atoi(v));
         } else if (a == "--cert") {
             auto v = need("--cert");
             if (!v) return 2;
-            cert = v;
+            cli_cert = v;
+            has_cert = true;
         } else if (a == "--key") {
             auto v = need("--key");
             if (!v) return 2;
-            key = v;
+            cli_key = v;
+            has_key = true;
         } else if (a == "-v" || a == "--verbose") {
             verbose = true;
         } else if (a == "-h" || a == "--help") {
@@ -86,17 +165,64 @@ int server_main(int argc, char** argv) {
             return 2;
         }
     }
-    if (tcp_port == 0) tcp_port = port;
-    if (udp_port == 0) udp_port = port;
+
+    const bool any_cli = has_bind || has_port || has_cert || has_key || cli_tcp || cli_udp;
+
+    // Decide where settings come from: an explicit walkthrough, an existing config,
+    // explicit CLI flags, or — refusing to silently assume defaults — a clear error.
+    ServerConfig eff;
+    if (force_setup || (!have_config && !any_cli && ::isatty(STDIN_FILENO))) {
+        if (have_config)
+            std::printf("Reconfiguring (a config already exists at %s).\n", config_path().c_str());
+        eff = run_setup();
+        std::string werr;
+        if (write_server_config(eff, &werr))
+            std::printf("\nSaved configuration to %s\n", config_path().c_str());
+        else
+            spl::logf("warning: could not save config: %s", werr.c_str());
+        std::printf("To connect a client to this server, set in its config [peer] section:\n");
+        std::printf("  addr = %s\n  port = %u\n", client_addr_hint(eff.addr).c_str(), eff.port);
+        std::printf("(or pass:  spl pair --server %s --port %u)\n\n",
+                    client_addr_hint(eff.addr).c_str(), eff.port);
+        std::fflush(stdout);
+    } else if (have_config) {
+        eff = cfg.server;
+    } else if (any_cli) {
+        eff = ServerConfig{};  // flags supply what matters; suggestions fill the rest below
+    } else {
+        spl::logf(
+            "No configuration found. Run `spl server` in a terminal to set it up\n"
+            "(or `spl server --setup`), or pass flags like --port. See %s.",
+            config_path().c_str());
+        return 1;
+    }
+
+    // CLI flags override whatever source we chose.
+    if (has_bind) eff.addr = cli_bind;
+    if (has_port) eff.port = cli_port;
+    if (has_cert) eff.cert = cli_cert;
+    if (has_key) eff.key = cli_key;
+
+    // Backfill anything still unset from the documented suggestions (a config or
+    // CLI invocation that omits rate limits still gets a working limiter).
+    if (eff.port == 0) eff.port = suggest::port;
+    if (eff.per_ip_rate == 0) eff.per_ip_rate = suggest::per_ip_rate;
+    if (eff.per_ip_burst == 0) eff.per_ip_burst = suggest::per_ip_burst;
+    if (eff.global_rate == 0) eff.global_rate = suggest::global_rate;
+    if (eff.global_burst == 0) eff.global_burst = suggest::global_burst;
+
+    const std::string bind = eff.addr;  // "" / "::" both mean any interface
+    const uint16_t tcp_port = cli_tcp ? cli_tcp : eff.port;
+    const uint16_t udp_port = cli_udp ? cli_udp : eff.port;
 
     std::string err;
     std::shared_ptr<net::TlsContext> ctx;
-    if (!cert.empty() || !key.empty()) {
-        if (cert.empty() || key.empty()) {
-            spl::logf("spl server: --cert and --key must be given together");
+    if (!eff.cert.empty() || !eff.key.empty()) {
+        if (eff.cert.empty() || eff.key.empty()) {
+            spl::logf("spl server: cert and key must be given together");
             return 2;
         }
-        auto c = net::TlsContext::server_from_files(cert, key, &err);
+        auto c = net::TlsContext::server_from_files(eff.cert, eff.key, &err);
         if (!c) {
             spl::logf("spl server: tls: %s", err.c_str());
             return 1;
@@ -131,6 +257,10 @@ int server_main(int argc, char** argv) {
 
     RelayConfig rcfg;
     rcfg.verbose = verbose;
+    rcfg.per_ip_rate = eff.per_ip_rate;
+    rcfg.per_ip_burst = eff.per_ip_burst;
+    rcfg.global_rate = eff.global_rate;
+    rcfg.global_burst = eff.global_burst;
     PairingConfig pcfg;
     pcfg.verbose = verbose;
 

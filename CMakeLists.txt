@@ -176,5 +176,11 @@ if(SPL_BUILD_TESTS)
     add_test(NAME stress_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stress_it.py $<TARGET_FILE:spl>)
     set_tests_properties(stress_integration PROPERTIES TIMEOUT 180)
+
+    # Onboarding: the `spl server` setup walkthrough writes a config, and a
+    # config-only server then runs and relays a real pairing.
+    add_test(NAME setup_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/setup_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(setup_integration PROPERTIES TIMEOUT 90)
   endif()
 endif()
