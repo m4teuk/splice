@@ -1,6 +1,9 @@
 #include "peer/pairing.h"
 
+#include <sys/wait.h>
+
 #include <cctype>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -47,6 +50,33 @@ Ip6 random_ula() {
 bool same_ula64(const Ip6& a, const Ip6& b) { return std::memcmp(a.data(), b.data(), 8) == 0; }
 
 std::string b64(const WgKey& k) { return base64_encode(as_span(k)); }
+
+// Copy text to the system clipboard via whatever helper happens to be installed.
+// A missing tool just means "false" — never fatal.
+bool copy_to_clipboard(const std::string& text) {
+    static const char* const tools[] = {
+        "wl-copy",                       // Wayland
+        "xclip -selection clipboard",    // X11
+        "xsel --clipboard --input",      // X11
+        "pbcopy",                        // macOS
+        "clip.exe",                      // WSL / Windows
+    };
+    auto prev = std::signal(SIGPIPE, SIG_IGN);  // a missing tool closing the pipe must not kill us
+    bool ok = false;
+    for (const char* tool : tools) {
+        std::string cmd = std::string(tool) + " >/dev/null 2>&1";
+        FILE* p = ::popen(cmd.c_str(), "w");
+        if (!p) continue;
+        std::fwrite(text.data(), 1, text.size(), p);
+        int rc = ::pclose(p);
+        if (rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0) {
+            ok = true;
+            break;
+        }
+    }
+    std::signal(SIGPIPE, prev);
+    return ok;
+}
 
 // Runs the post-PAIRED exchange. Returns 0 on success.
 int run_pairing(net::TlsConn& conn, bool is_leader, const std::string& spake_code,
@@ -234,30 +264,44 @@ int run_pairing(net::TlsConn& conn, bool is_leader, const std::string& spake_cod
         return 1;
     }
 
-    // 5. Trust decision (accept / decline / verify), then persist.
+    // 5. Trust decision (accept / decline / verify), then persist. Both keys are
+    //    shown so either side can confirm them out of band before accepting.
     std::string name = preset_name;
     if (name.empty()) {
-        std::printf("\nPeer connected. Their public key:\n  %s\n", b64(rec.peer_pub).c_str());
-        std::printf("[a]ccept / [d]ecline / [v]erify (paste their key)? ");
-        std::fflush(stdout);
-        std::string line;
-        std::getline(std::cin, line);
-        char choice = line.empty() ? 'a' : static_cast<char>(std::tolower(line[0]));
-        if (choice == 'd') {
-            std::printf("Declined.\n");
-            return 1;
-        }
-        if (choice == 'v') {
-            std::printf("Paste peer's public key (base64): ");
+        std::printf("\nPeer connected. Compare these keys out of band if you like:\n");
+        std::printf("  Your key:  %s\n", b64(rec.own_pub).c_str());
+        std::printf("  Their key: %s\n", b64(rec.peer_pub).c_str());
+        for (;;) {
+            std::printf("[a]ccept / [d]ecline / [v]erify (paste their key) / [c]opy your key? ");
             std::fflush(stdout);
-            std::string pasted;
-            std::getline(std::cin, pasted);
-            auto dec = base64_decode(pasted);
-            if (!dec || dec->size() != kWgKeyLen ||
-                std::memcmp(dec->data(), rec.peer_pub.data(), kWgKeyLen) != 0) {
-                std::printf("Key mismatch — aborting.\n");
+            std::string line;
+            if (!std::getline(std::cin, line)) break;  // EOF: accept
+            char choice = line.empty() ? 'a' : static_cast<char>(std::tolower(line[0]));
+            if (choice == 'c') {
+                if (copy_to_clipboard(b64(rec.own_pub)))
+                    std::printf("Copied your public key to the clipboard.\n");
+                else
+                    std::printf("No clipboard tool found — copy your key above manually.\n");
+                continue;  // re-prompt
+            }
+            if (choice == 'd') {
+                std::printf("Declined.\n");
                 return 1;
             }
+            if (choice == 'v') {
+                std::printf("Paste peer's public key (base64): ");
+                std::fflush(stdout);
+                std::string pasted;
+                std::getline(std::cin, pasted);
+                auto dec = base64_decode(pasted);
+                if (!dec || dec->size() != kWgKeyLen ||
+                    std::memcmp(dec->data(), rec.peer_pub.data(), kWgKeyLen) != 0) {
+                    std::printf("Key mismatch — aborting.\n");
+                    return 1;
+                }
+                std::printf("Match confirmed.\n");
+            }
+            break;  // accept
         }
         std::printf("Name for this peer: ");
         std::fflush(stdout);

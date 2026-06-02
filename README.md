@@ -88,6 +88,11 @@ If the server's TLS certificate doesn't verify (e.g. the dev self-signed cert),
 `pair` warns and prompts before continuing; pass `--insecure` to skip the prompt
 (required when pairing non-interactively with `--name`).
 
+Before accepting, each side shows **both** public keys (yours and the peer's) so
+you can compare them out of band; the prompt accepts `[v]erify` (paste the peer's
+key to check it) and `[c]opy` (copy your own key to the clipboard) alongside
+`[a]ccept`/`[d]ecline`.
+
 Then talk over the tunnel. Send a file (optionally renaming it for the receiver),
 chat interactively, or manage connections:
 
