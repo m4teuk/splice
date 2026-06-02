@@ -71,7 +71,11 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
     : udp_(std::move(udp)),
       cfg_(cfg),
       wg_(WgTunnel::create(cfg.own_priv, cfg.peer_pub, 1)) {
-    if (const char* l = std::getenv("SPL_LOSS")) loss_ = std::atof(l);
+    if (const char* l = std::getenv("SPL_LOSS")) {
+        loss_ = std::atof(l);
+        if (!(loss_ > 0.0)) loss_ = 0.0;  // NaN / negative / garbage -> disabled
+        if (loss_ > 1.0) loss_ = 1.0;
+    }
     spl_random_bytes(reinterpret_cast<uint8_t*>(&rng_), sizeof(rng_));
 }
 
@@ -149,6 +153,11 @@ void PathManager::handle_disco(ByteSpan body, const Endpoint* from, Millis now) 
         Bytes pong = build_inner(CH_DISCO, as_span(build_pong(tx)));
         send_payload(Path::Direct, from, as_span(pong));
     } else if (dt == DISCO_PONG) {
+        const uint64_t tx = r.u64();
+        // Only count a PONG that echoes our latest PING token and arrives from our
+        // current candidate address — otherwise a spoofed PONG could keep a dead or
+        // attacker-chosen direct path looking alive and starve the relay fallback.
+        if (!r.ok() || tx != ping_txid_ || !from || !peer_direct_ || *from != *peer_direct_) return;
         if (!direct_confirmed_) {
             direct_confirmed_ = true;
             if (cfg_.verbose) spl::logf("[path] direct path confirmed (pong)");

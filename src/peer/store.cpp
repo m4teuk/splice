@@ -1,8 +1,10 @@
 #include "peer/store.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
@@ -92,22 +94,48 @@ std::optional<Store> Store::open(std::string* err) {
 
 bool Store::save(const ConnRecord& r, std::string* err) {
     const std::string path = dir_ + "/" + sanitize(r.name) + ".conn";
-    std::ofstream f(path, std::ios::trunc);
-    if (!f) {
-        if (err) *err = "cannot write " + path;
+    const std::string tmp = path + ".tmp";
+
+    std::ostringstream s;
+    s << "name: " << r.name << "\n"
+      << "uid: " << base64_encode(as_span(r.uid)) << "\n"
+      << "side: " << (r.side ? 1 : 0) << "\n"
+      << "ula_base: " << base64_encode(as_span(r.ula_base)) << "\n"
+      << "ula_prefix: " << static_cast<int>(r.ula_prefix) << "\n"
+      << "own_priv: " << base64_encode(as_span(r.own_priv)) << "\n"
+      << "own_pub: " << base64_encode(as_span(r.own_pub)) << "\n"
+      << "peer_pub: " << base64_encode(as_span(r.peer_pub)) << "\n"
+      << "created: " << r.created_unix << "\n";
+    const std::string body = s.str();
+
+    // Write to a 0600 temp file (the private key is never briefly world-readable),
+    // then rename into place atomically so a crash can't leave a partial record.
+    ::unlink(tmp.c_str());
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) {
+        if (err) *err = "cannot create " + tmp;
         return false;
     }
-    f << "name: " << r.name << "\n";
-    f << "uid: " << base64_encode(as_span(r.uid)) << "\n";
-    f << "side: " << (r.side ? 1 : 0) << "\n";
-    f << "ula_base: " << base64_encode(as_span(r.ula_base)) << "\n";
-    f << "ula_prefix: " << static_cast<int>(r.ula_prefix) << "\n";
-    f << "own_priv: " << base64_encode(as_span(r.own_priv)) << "\n";
-    f << "own_pub: " << base64_encode(as_span(r.own_pub)) << "\n";
-    f << "peer_pub: " << base64_encode(as_span(r.peer_pub)) << "\n";
-    f << "created: " << r.created_unix << "\n";
-    f.close();
-    ::chmod(path.c_str(), 0600);
+    const char* p = body.data();
+    size_t left = body.size();
+    while (left > 0) {
+        ssize_t n = ::write(fd, p, left);
+        if (n <= 0) {
+            ::close(fd);
+            ::unlink(tmp.c_str());
+            if (err) *err = "write failed for " + tmp;
+            return false;
+        }
+        p += n;
+        left -= static_cast<size_t>(n);
+    }
+    ::fsync(fd);
+    ::close(fd);
+    if (::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+        if (err) *err = "rename failed for " + path;
+        return false;
+    }
     return true;
 }
 

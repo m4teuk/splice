@@ -138,11 +138,12 @@ bool enumerate(const std::string& arg, std::vector<Item>* items, std::string* er
             for (auto& e : fs::recursive_directory_iterator(
                      path, fs::directory_options::skip_permission_denied)) {
                 std::error_code fec;
-                if (e.is_regular_file(fec)) {
-                    std::string sub = fs::relative(e.path(), path, fec).generic_string();
-                    items->push_back({e.path().string(), root + "/" + sub,
-                                      static_cast<uint64_t>(e.file_size(fec))});
-                }
+                if (!e.is_regular_file(fec) || fec) continue;
+                std::string sub = fs::relative(e.path(), path, fec).generic_string();
+                if (fec || sub.empty()) continue;
+                uint64_t sz = e.file_size(fec);
+                if (fec) continue;  // can't stat (e.g. raced deletion) -> skip, don't offer a bogus size
+                items->push_back({e.path().string(), root + "/" + sub, sz});
             }
         } catch (const std::exception& ex) {
             *err = "error reading '" + path + "': " + ex.what();
@@ -310,11 +311,13 @@ int send_main(int argc, char** argv) {
                     spl::logf("spl send: cancelled by peer: %.*s", static_cast<int>(reason.size()),
                               reinterpret_cast<const char*>(reason.data()));
                     g_stop.store(true);
+                    break;
                 } else if (t == kDone) {
                     result = 0;
                     std::printf("sent %zu file%s\n", sent_count, sent_count == 1 ? "" : "s");
                     conn->close();
                     g_stop.store(true);
+                    break;
                 }
             }
         };
@@ -415,7 +418,10 @@ int receive_main(int argc, char** argv) {
                                 target.c_str());
                     std::fflush(stdout);
                     std::string line;
-                    std::getline(std::cin, line);
+                    if (!std::getline(std::cin, line)) {  // closed/EOF stdin: skip, never clobber
+                        skip = true;
+                        break;
+                    }
                     char ch = line.empty() ? 'c' : static_cast<char>(std::tolower(line[0]));
                     if (ch == 'o') break;
                     if (ch == 's') { skip = true; break; }
@@ -463,6 +469,13 @@ int receive_main(int argc, char** argv) {
                 size_t take = static_cast<size_t>(std::min<uint64_t>(remaining, inbuf.size()));
                 out.write(reinterpret_cast<const char*>(inbuf.data()),
                           static_cast<std::streamsize>(take));
+                if (!out) {  // disk full / write error -> stop, don't report a phantom success
+                    conn->send(as_span(encode_cancel("write failed")));
+                    conn->close();
+                    spl::logf("spl receive: write failed for '%s'", final_name.c_str());
+                    g_stop.store(true);
+                    return;
+                }
                 remaining -= take;
                 inbuf.erase(inbuf.begin(), inbuf.begin() + take);
                 print_progress(tty, &last_prog, t_start, "receiving", final_name, total - remaining,

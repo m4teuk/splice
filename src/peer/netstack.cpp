@@ -203,8 +203,17 @@ void Netstack::emit(pbuf* p) {
 void Netstack::listen(uint16_t port, std::function<void(TcpConn*)> on_accept) {
     accept_cb_ = std::move(on_accept);
     tcp_pcb* pcb = tcp_new_ip_type(IPADDR_TYPE_V6);
-    tcp_bind(pcb, IP_ANY_TYPE, port);
-    listen_pcb_ = tcp_listen(pcb);
+    if (!pcb) return;  // out of memory
+    if (tcp_bind(pcb, IP_ANY_TYPE, port) != ERR_OK) {
+        tcp_close(pcb);
+        return;
+    }
+    tcp_pcb* l = tcp_listen(pcb);
+    if (!l) {  // tcp_listen does NOT free the input pcb on failure
+        tcp_close(pcb);
+        return;
+    }
+    listen_pcb_ = l;
     tcp_arg(listen_pcb_, this);
     tcp_accept(listen_pcb_, tramp_accept);
 }
@@ -222,6 +231,10 @@ int Netstack::on_lwip_accept(tcp_pcb* newpcb, int err) {
 void Netstack::connect(const proto::Ip6& peer, uint16_t port,
                        std::function<void(TcpConn*)> on_connect, std::function<void()> on_fail) {
     tcp_pcb* pcb = tcp_new_ip_type(IPADDR_TYPE_V6);
+    if (!pcb) {  // out of memory: report failure so the caller (e.g. send's retry) can react
+        if (on_fail) on_fail();
+        return;
+    }
     auto conn = std::make_unique<TcpConn>(pcb);
     TcpConn* raw = conn.get();
     raw->connect_cb = std::move(on_connect);
@@ -231,7 +244,11 @@ void Netstack::connect(const proto::Ip6& peer, uint16_t port,
     ip_addr_t dst;
     std::memset(&dst, 0, sizeof(dst));
     std::memcpy(&dst, peer.data(), 16);  // ip_addr_t == ip6_addr_t with LWIP_IPV4=0
-    tcp_connect(pcb, &dst, port, tramp_connected);
+    if (tcp_connect(pcb, &dst, port, tramp_connected) != ERR_OK) {
+        // Synchronous failure: lwIP won't call tramp_connected, so abort the pcb,
+        // which fires tramp_err -> on_lwip_err -> fail_cb and marks the conn reapable.
+        tcp_abort(pcb);
+    }
 }
 
 }  // namespace spl::peer

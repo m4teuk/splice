@@ -1,5 +1,6 @@
 #include "peer/pairing.h"
 
+#include <openssl/crypto.h>
 #include <sys/wait.h>
 
 #include <cctype>
@@ -50,6 +51,10 @@ Ip6 random_ula() {
 bool same_ula64(const Ip6& a, const Ip6& b) { return std::memcmp(a.data(), b.data(), 8) == 0; }
 
 std::string b64(const WgKey& k) { return base64_encode(as_span(k)); }
+
+// Constant-time equality for the key-confirmation MAC. A timing side channel here
+// could help a malicious server (which can re-bridge/replay) probe the code.
+bool mac_eq(const Mac& a, const Mac& b) { return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0; }
 
 // Copy text to the system clipboard via whatever helper happens to be installed.
 // A missing tool just means "false" — never fatal.
@@ -140,14 +145,14 @@ int run_pairing(net::TlsConn& conn, bool is_leader, const std::string& spake_cod
         if (!send_peer(KeyConfirm{macL})) return protofail();
         auto m = recv_peer();
         if (!m || !std::holds_alternative<KeyConfirm>(*m)) return protofail();
-        if (std::get<KeyConfirm>(*m).mac != macF) {
+        if (!mac_eq(std::get<KeyConfirm>(*m).mac, macF)) {
             spl::logf("pairing failed: key confirmation mismatch (wrong code or tampering)");
             return 1;
         }
     } else {
         auto m = recv_peer();
         if (!m || !std::holds_alternative<KeyConfirm>(*m)) return protofail();
-        if (std::get<KeyConfirm>(*m).mac != macL) {
+        if (!mac_eq(std::get<KeyConfirm>(*m).mac, macL)) {
             spl::logf("pairing failed: key confirmation mismatch (wrong code or tampering)");
             return 1;
         }
@@ -275,7 +280,10 @@ int run_pairing(net::TlsConn& conn, bool is_leader, const std::string& spake_cod
             std::printf("[a]ccept / [d]ecline / [v]erify (paste their key) / [c]opy your key? ");
             std::fflush(stdout);
             std::string line;
-            if (!std::getline(std::cin, line)) break;  // EOF: accept
+            if (!std::getline(std::cin, line)) {  // EOF / non-interactive: decline, never auto-trust
+                std::printf("Declined (no confirmation; use --name to accept non-interactively).\n");
+                return 1;
+            }
             char choice = line.empty() ? 'a' : static_cast<char>(std::tolower(line[0]));
             if (choice == 'c') {
                 if (copy_to_clipboard(b64(rec.own_pub)))
