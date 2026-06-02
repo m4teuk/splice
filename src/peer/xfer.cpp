@@ -15,6 +15,7 @@
 
 #include "common/bytes.h"
 #include "common/log.h"
+#include "common/time.h"
 #include "peer/runtime.h"
 
 namespace spl::peer {
@@ -78,6 +79,24 @@ std::string sanitize_filename(const std::string& s) {
 bool file_exists(const std::string& path) {
     struct stat st;
     return ::stat(path.c_str(), &st) == 0;
+}
+
+// In-place progress line on a TTY (throttled); silent when stderr is redirected,
+// so it never pollutes piped/captured output.
+void print_progress(bool tty, Millis* last, Millis start, const char* verb,
+                    const std::string& name, uint64_t done, uint64_t total) {
+    if (!tty) return;
+    Millis now = mono_ms();
+    bool fin = done >= total;
+    if (!fin && now - *last < 200) return;
+    *last = now;
+    int pct = total ? static_cast<int>(done * 100 / total) : 100;
+    double secs = (now - start) / 1000.0;
+    uint64_t rate = secs > 0.0 ? static_cast<uint64_t>(done / secs) : 0;
+    std::fprintf(stderr, "\r%s %s: %3d%% (%s / %s) %s/s   ", verb, name.c_str(), pct,
+                 human_bytes(done).c_str(), human_bytes(total).c_str(), human_bytes(rate).c_str());
+    if (fin) std::fputc('\n', stderr);
+    std::fflush(stderr);
 }
 
 std::string basename_of(const std::string& path) {
@@ -155,6 +174,8 @@ int send_main(int argc, char** argv) {
     Bytes inbuf;
     uint64_t remaining = size;
     int result = 1;
+    bool tty = isatty(STDERR_FILENO), prog_done = false;
+    Millis last_prog = 0, t_start = 0;
 
     auto pump = [&]() {
         if (!conn) return;
@@ -169,6 +190,12 @@ int send_main(int argc, char** argv) {
             if (got <= 0) break;
             conn->send(ByteSpan(reinterpret_cast<uint8_t*>(chunk.data()), static_cast<size_t>(got)));
             remaining -= static_cast<uint64_t>(got);
+        }
+        if (remaining > 0) {
+            print_progress(tty, &last_prog, t_start, "sending", newname, size - remaining, size);
+        } else if (!prog_done) {
+            prog_done = true;  // final 100% line once (the rate at completion)
+            print_progress(tty, &last_prog, t_start, "sending", newname, size, size);
         }
         // The receiver knows the size, so we don't FIN here; we wait for its DONE
         // (sending a FIN early would race the receiver's close and trigger a RST).
@@ -187,6 +214,7 @@ int send_main(int argc, char** argv) {
                         if (opts.verbose)
                             spl::logf("[send] peer accepted; sending %llu bytes",
                                       static_cast<unsigned long long>(size));
+                        t_start = mono_ms();
                         conn->on_writable = pump;
                         pump();
                     } else if (payload[0] == kCancel) {
@@ -244,6 +272,9 @@ int receive_main(int argc, char** argv) {
     std::string final_name;
     int result = 1;
     TcpConn* conn = nullptr;
+    bool tty = isatty(STDERR_FILENO);
+    Millis last_prog = 0, t_start = 0;
+    uint64_t total = 0;
 
     auto process = [&]() {
         for (;;) {
@@ -309,6 +340,8 @@ int receive_main(int argc, char** argv) {
                 }
                 final_name = target;
                 remaining = size;
+                total = size;
+                t_start = mono_ms();
                 Bytes acc = encode_accept();
                 conn->send(as_span(acc));
                 if (opts.verbose)
@@ -323,6 +356,8 @@ int receive_main(int argc, char** argv) {
                           static_cast<std::streamsize>(take));
                 remaining -= take;
                 inbuf.erase(inbuf.begin(), inbuf.begin() + take);
+                print_progress(tty, &last_prog, t_start, "receiving", final_name,
+                               total - remaining, total);
                 if (remaining == 0) {
                     out.close();
                     state = Done;
