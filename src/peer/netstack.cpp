@@ -1,5 +1,6 @@
 #include "peer/netstack.h"
 
+#include <cstdio>
 #include <cstring>
 
 #include "lwip/init.h"
@@ -124,9 +125,9 @@ int TcpConn::on_lwip_recv(pbuf* p, int err) {
     }
     Bytes data(p->tot_len);
     pbuf_copy_partial(p, data.data(), p->tot_len, 0);
-    if (on_recv) on_recv(as_span(data));
-    tcp_recved(pcb_, p->tot_len);
+    tcp_recved(pcb_, p->tot_len);  // ack before the app callback (which may close)
     pbuf_free(p);
+    if (on_recv) on_recv(as_span(data));
     return ERR_OK;
 }
 
@@ -134,8 +135,11 @@ int TcpConn::on_lwip_sent(uint16_t) {
     flush();
     maybe_shutdown_tx();
     if (want_close_ && pending_.empty()) do_close();
+    if (on_writable) on_writable();
     return ERR_OK;
 }
+
+size_t TcpConn::sndbuf() const { return pcb_ ? tcp_sndbuf(pcb_) : 0; }
 
 void TcpConn::on_lwip_err(int) {
     pcb_ = nullptr;  // lwIP already freed the pcb

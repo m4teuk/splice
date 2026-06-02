@@ -3,9 +3,12 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <map>
 
 #include "common/time.h"
 #include "net/socket.h"
+#include "proto/pairing.h"
 #include "server/rate_limit.h"
 #include "server/relay_table.h"
 
@@ -30,6 +33,11 @@ class RelayServer {
     RelayConfig cfg_;
     RelayTable table_;
     RateLimiter limiter_;
+
+    // verbose stats
+    uint64_t stat_pkts_ = 0, stat_bytes_ = 0, stat_dropped_ = 0, stat_whereami_ = 0;
+    std::map<proto::Uid, uint64_t> flow_;  // bytes relayed per uid, current interval
+    Millis t_stats_ = 0;
 };
 
 }  // namespace spl::server

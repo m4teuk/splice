@@ -90,7 +90,9 @@ class PathManager {
     int extra_fd_ = -1;
     std::function<void()> on_extra_readable_;
     Millis start_ = 0;
-    Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0;
+    Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0, t_stats_ = 0;
+    // verbose throughput counters (bytes), split by path
+    uint64_t tx_direct_ = 0, tx_relay_ = 0, rx_direct_ = 0, rx_relay_ = 0;
     uint32_t whereami_token_ = 0;
     uint64_t ping_txid_ = 0;
 };

@@ -10,9 +10,11 @@
 #include <string_view>
 
 #include "native/native.h"
+#include "peer/chat.h"
 #include "peer/datatest.h"
-#include "peer/nc.h"
 #include "peer/pairing.h"
+#include "peer/peer_cmd.h"
+#include "peer/xfer.h"
 #include "server/server_main.h"
 
 namespace {
@@ -25,22 +27,22 @@ int cmd_server(int argc, char** argv) {
 int cmd_pair(int argc, char** argv) {
     return spl::peer::pair_main(argc, argv);
 }
-int cmd_send(int argc, char** argv) {
-    return spl::peer::nc_main(/*is_send=*/true, argc, argv);
-}
-int cmd_receive(int argc, char** argv) {
-    return spl::peer::nc_main(/*is_send=*/false, argc, argv);
-}
+int cmd_send(int argc, char** argv) { return spl::peer::send_main(argc, argv); }
+int cmd_receive(int argc, char** argv) { return spl::peer::receive_main(argc, argv); }
+int cmd_chat(int argc, char** argv) { return spl::peer::chat_main(argc, argv); }
+int cmd_peer(int argc, char** argv) { return spl::peer::peer_cmd_main(argc, argv); }
 
 void print_usage() {
     std::puts(
         "usage: spl <command> [args]\n"
         "\n"
         "commands:\n"
-        "  server      run the rendezvous + relay server\n"
-        "  pair        pair with another peer (`spl pair` or `spl pair <code>`)\n"
-        "  send        connect to a paired peer and send\n"
-        "  receive     wait for a paired peer and receive\n"
+        "  server                              run the rendezvous + relay server\n"
+        "  pair [code]                         pair with another peer\n"
+        "  peer ls | rename | remove | add     manage paired connections\n"
+        "  chat <name>                         bidirectional pipe over the tunnel\n"
+        "  send (s) <name> <path[:newname]>    send a file\n"
+        "  receive (r) <name>                  receive a file\n"
         "\n"
         "  --version   print version\n"
         "  --selftest  verify the native (Rust) FFI link\n"
@@ -78,8 +80,10 @@ int main(int argc, char** argv) {
 
     if (cmd == "server") return cmd_server(argc - 1, argv + 1);
     if (cmd == "pair") return cmd_pair(argc - 1, argv + 1);
-    if (cmd == "send") return cmd_send(argc - 1, argv + 1);
-    if (cmd == "receive") return cmd_receive(argc - 1, argv + 1);
+    if (cmd == "peer") return cmd_peer(argc - 1, argv + 1);
+    if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
+    if (cmd == "send" || cmd == "s") return cmd_send(argc - 1, argv + 1);
+    if (cmd == "receive" || cmd == "r") return cmd_receive(argc - 1, argv + 1);
     if (cmd == "__datatest") return spl::peer::datatest_main(argc - 1, argv + 1);
 
     std::fprintf(stderr, "spl: unknown command '%.*s'\n",

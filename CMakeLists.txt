@@ -37,6 +37,7 @@ target_include_directories(spl_proto PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 # --- spl_core: pure server/runtime logic (no TLS), unit-testable ---
 add_library(spl_core STATIC
+  src/common/config.cpp
   src/net/endpoint.cpp
   src/server/relay_table.cpp
   src/server/rate_limit.cpp
@@ -84,7 +85,10 @@ add_library(spl_peer STATIC
   src/peer/pathman.cpp
   src/peer/datatest.cpp
   src/peer/netstack.cpp
-  src/peer/nc.cpp
+  src/peer/runtime.cpp
+  src/peer/chat.cpp
+  src/peer/xfer.cpp
+  src/peer/peer_cmd.cpp
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
 target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip)
@@ -131,6 +135,7 @@ if(SPL_BUILD_TESTS)
     tests/test_spake2.cpp
     tests/test_wg.cpp
     tests/test_netstack.cpp
+    tests/test_config.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
 
@@ -157,9 +162,14 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/data_it.py $<TARGET_FILE:spl>)
     set_tests_properties(datapath_integration PROPERTIES TIMEOUT 120)
 
-    # Full stack: pair, then pipe bytes through the WireGuard/lwIP tunnel (nc-style).
-    add_test(NAME nc_integration
-             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/nc_it.py $<TARGET_FILE:spl>)
-    set_tests_properties(nc_integration PROPERTIES TIMEOUT 90)
+    # Full stack: pair, then a bidirectional `spl chat` pipe through the tunnel.
+    add_test(NAME chat_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(chat_integration PROPERTIES TIMEOUT 90)
+
+    # Full stack: pair, then `spl send` a file to `spl receive`.
+    add_test(NAME file_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/file_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(file_integration PROPERTIES TIMEOUT 90)
   endif()
 endif()

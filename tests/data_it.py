@@ -93,7 +93,7 @@ def main():
     try:
         # --- pair the two peers ---
         leader = subprocess.Popen(
-            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--name", "thefollower"],
+            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "thefollower"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ, SPL_CONFIG_DIR=ld),
         )
@@ -101,7 +101,7 @@ def main():
         assert codeline, "leader did not print a pairing code"
         code = codeline.split()[-1]
         follower = subprocess.run(
-            [SPL, "pair", code, "--server", "127.0.0.1", "--port", str(port), "--name", "theleader"],
+            [SPL, "pair", code, "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "theleader"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
             env=dict(os.environ, SPL_CONFIG_DIR=fd),
         )

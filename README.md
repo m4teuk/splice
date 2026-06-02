@@ -72,18 +72,45 @@ On the second, paste the code (each side names the other for later):
 spl pair 3-481922 --server relay.example --port 7777 --name laptop
 ```
 
-Then pipe bytes over the tunnel (nc-style):
+If the server's TLS certificate doesn't verify (e.g. the dev self-signed cert),
+`pair` warns and prompts before continuing; pass `--insecure` to skip the prompt
+(required when pairing non-interactively with `--name`).
+
+Then talk over the tunnel. Send a file (optionally renaming it for the receiver),
+chat interactively, or manage connections:
 
 ```sh
-# on the receiver
-spl receive laptop --server relay.example --port 7777 > out.txt
-# on the sender
-spl send phone --server relay.example --port 7777 < in.txt
+spl receive laptop                 # waits for an incoming file (writes to cwd)
+spl send phone ./report.pdf        # or  ./report.pdf:renamed.pdf   (s / r aliases work)
+spl chat laptop                    # bidirectional stdin<->stdout pipe
+
+spl peer ls                        # list paired connections
+spl peer rename laptop work        # rename
+spl peer remove work               # delete
 ```
 
-`--name NAME` on `pair` accepts non-interactively; without it you get an
-accept / decline / verify-by-pasting-the-peer-key prompt. Connection records live
-under `$SPL_CONFIG_DIR` (else `$XDG_CONFIG_HOME/spl`, else `~/.config/spl`), mode 0600.
+The receiver never silently overwrites: a name collision prompts
+`[o]verwrite / [c]ancel / [r]ename`, and incoming names are reduced to a safe
+basename in the current directory. Add `-v` to any command for verbose logging
+(the peer shows throughput by path — direct vs relay — and the server shows a live
+relay summary).
+
+### Config file
+
+To avoid repeating `--server`/`--port`, drop a `config` file in the config dir
+(`$SPL_CONFIG_DIR`, else `$XDG_CONFIG_HOME/spl`, else `~/.config/spl`):
+
+```ini
+[server]      # defaults for `spl server`
+addr = ::
+port = 7777
+
+[peer]        # default relay for pair / chat / send / receive
+addr = relay.example
+port = 7777
+```
+
+CLI flags override the config. Connection records live in the same dir, mode 0600.
 
 ## Test
 

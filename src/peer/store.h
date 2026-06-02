@@ -31,6 +31,11 @@ class Store {
     std::optional<ConnRecord> load(const std::string& name);
     std::vector<ConnRecord> load_all();
 
+    std::vector<std::string> list();  // connection names, sorted
+    bool exists(const std::string& name);
+    bool rename(const std::string& from, const std::string& to, std::string* err);
+    bool remove(const std::string& name);  // true if a record was removed
+
     const std::string& dir() const { return dir_; }
 
  private:

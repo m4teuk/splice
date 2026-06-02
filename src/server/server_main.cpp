@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "common/config.h"
 #include "common/log.h"
 #include "net/socket.h"
 #include "net/tls.h"
@@ -36,8 +37,9 @@ void usage() {
 }  // namespace
 
 int server_main(int argc, char** argv) {
-    std::string bind, cert, key;
-    uint16_t port = 7777, tcp_port = 0, udp_port = 0;
+    Config cfg = load_config();
+    std::string bind = cfg.server.addr, cert, key;
+    uint16_t port = cfg.server.port ? cfg.server.port : 7777, tcp_port = 0, udp_port = 0;
     bool verbose = false;
 
     for (int i = 1; i < argc; ++i) {

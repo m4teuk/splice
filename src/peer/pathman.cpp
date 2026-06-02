@@ -73,9 +73,11 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
 
 void PathManager::send_payload(Path path, const Endpoint* direct_to, ByteSpan payload) {
     if (path == Path::Relay) {
+        tx_relay_ += payload.size();
         Bytes pkt = proto::encode_relay_up(cfg_.uid, payload);
         send_to(udp_.get(), cfg_.server, as_span(pkt));
     } else if (direct_to) {
+        tx_direct_ += payload.size();
         send_to(udp_.get(), *direct_to, payload);
     }
 }
@@ -160,6 +162,7 @@ void PathManager::dispatch_inner(ByteSpan inner, Path via, const Endpoint* from,
 
 void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
     if (force_relay_ && !(src == cfg_.server)) return;  // pretend the direct path is gone
+    (src == cfg_.server ? rx_relay_ : rx_direct_) += raw.size();
     if (src == cfg_.server) {
         auto t = proto::peek_udp_type(raw);
         if (t == proto::UdpType::kWhereami) {
@@ -253,6 +256,13 @@ void PathManager::run(std::atomic<bool>& stop) {
         }
 
         update_tx_path(now);
+        if (cfg_.verbose && now - t_stats_ >= 2000) {
+            t_stats_ = now;
+            spl::logf("[stats] path=%s | tx: direct %s / relay %s | rx: direct %s / relay %s",
+                      path_name(tx_path_), human_bytes(tx_direct_).c_str(),
+                      human_bytes(tx_relay_).c_str(), human_bytes(rx_direct_).c_str(),
+                      human_bytes(rx_relay_).c_str());
+        }
         if (on_tick) on_tick(now);
     }
 }

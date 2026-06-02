@@ -87,14 +87,14 @@ def run_pair_ok():
     leader = None
     try:
         leader = subprocess.Popen(
-            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--name", "thefollower"],
+            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "thefollower"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ, SPL_CONFIG_DIR=ld),
         )
         code = read_code(leader)
         assert code, "leader did not print a pairing code"
         follower = subprocess.run(
-            [SPL, "pair", code, "--server", "127.0.0.1", "--port", str(port), "--name", "theleader"],
+            [SPL, "pair", code, "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "theleader"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
             env=dict(os.environ, SPL_CONFIG_DIR=fd),
         )
@@ -124,7 +124,7 @@ def run_tamper():
     leader = None
     try:
         leader = subprocess.Popen(
-            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--name", "x"],
+            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "x"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ, SPL_CONFIG_DIR=ld),
         )
@@ -133,7 +133,7 @@ def run_tamper():
         pid, sp = code.split("-")
         wrong = pid + "-" + ("000000" if sp != "000000" else "111111")
         follower = subprocess.run(
-            [SPL, "pair", wrong, "--server", "127.0.0.1", "--port", str(port), "--name", "y"],
+            [SPL, "pair", wrong, "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "y"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
             env=dict(os.environ, SPL_CONFIG_DIR=fd),
         )

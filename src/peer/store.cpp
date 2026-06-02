@@ -4,8 +4,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -13,17 +15,13 @@
 #include <sstream>
 
 #include "common/base64.h"
+#include "common/config.h"
 
 namespace spl::peer {
 
 namespace {
 
-std::string resolve_dir() {
-    if (const char* d = std::getenv("SPL_CONFIG_DIR")) return d;
-    if (const char* x = std::getenv("XDG_CONFIG_HOME")) return std::string(x) + "/spl";
-    if (const char* h = std::getenv("HOME")) return std::string(h) + "/.config/spl";
-    return "./.spl";
-}
+std::string resolve_dir() { return config_dir(); }
 
 bool mkdirs(const std::string& path) {
     for (size_t i = 1; i <= path.size(); ++i) {
@@ -129,6 +127,40 @@ std::vector<ConnRecord> Store::load_all() {
     }
     ::closedir(d);
     return out;
+}
+
+std::vector<std::string> Store::list() {
+    std::vector<std::string> out;
+    for (auto& r : load_all()) out.push_back(r.name);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool Store::exists(const std::string& name) {
+    std::ifstream f(dir_ + "/" + sanitize(name) + ".conn");
+    return f.good();
+}
+
+bool Store::remove(const std::string& name) {
+    return std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) == 0;
+}
+
+bool Store::rename(const std::string& from, const std::string& to, std::string* err) {
+    auto rec = load(from);
+    if (!rec) {
+        if (err) *err = "no connection named '" + from + "'";
+        return false;
+    }
+    const std::string from_path = dir_ + "/" + sanitize(from) + ".conn";
+    const std::string to_path = dir_ + "/" + sanitize(to) + ".conn";
+    if (from_path != to_path && exists(to)) {
+        if (err) *err = "'" + to + "' already exists";
+        return false;
+    }
+    rec->name = to;
+    if (!save(*rec, err)) return false;  // writes to_path
+    if (from_path != to_path) std::remove(from_path.c_str());
+    return true;
 }
 
 }  // namespace spl::peer

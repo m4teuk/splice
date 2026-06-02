@@ -21,8 +21,11 @@ namespace spl::peer {
 class TcpConn {
  public:
     std::function<void(ByteSpan)> on_recv;
-    std::function<void()> on_closed;  // peer half-closed (sent FIN; no more data)
-    std::function<void()> on_error;   // hard failure (pcb gone)
+    std::function<void()> on_closed;    // peer half-closed (sent FIN; no more data)
+    std::function<void()> on_error;     // hard failure (pcb gone)
+    std::function<void()> on_writable;  // send buffer freed up (for flow control)
+
+    size_t sndbuf() const;  // bytes that can be queued right now
 
     explicit TcpConn(tcp_pcb* pcb);
 

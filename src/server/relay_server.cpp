@@ -54,10 +54,18 @@ void RelayServer::run(std::atomic<bool>& stop) {
                     if (!up) continue;
                     auto dst = table_.on_packet(up->uid, src, now);
                     if (dst) {
+                        if (!up->payload.empty()) {  // (empty = registration keepalive)
+                            ++stat_pkts_;
+                            stat_bytes_ += up->payload.size();
+                            if (cfg_.verbose) flow_[up->uid] += up->payload.size();
+                        }
                         Bytes down = proto::encode_relay_down(as_span(up->payload));
                         udp_send(udp_.get(), *dst, as_span(down));
+                    } else if (!up->payload.empty()) {
+                        ++stat_dropped_;  // peer not registered yet
                     }
                 } else {  // whereami
+                    ++stat_whereami_;
                     auto tok = proto::decode_whereami_req(pkt);
                     if (!tok) continue;
                     Bytes rep =
@@ -71,6 +79,20 @@ void RelayServer::run(std::atomic<bool>& stop) {
             table_.evict_expired(now);
             limiter_.evict_idle(now, 300'000);
             last_maint = now;
+        }
+        if (cfg_.verbose && now - t_stats_ >= 2000) {
+            t_stats_ = now;
+            spl::logf("[relay] uids=%zu | relayed %llu pkts / %s | dropped %llu | whereami %llu",
+                      table_.size(), static_cast<unsigned long long>(stat_pkts_),
+                      spl::human_bytes(stat_bytes_).c_str(),
+                      static_cast<unsigned long long>(stat_dropped_),
+                      static_cast<unsigned long long>(stat_whereami_));
+            for (auto& kv : flow_) {
+                proto::Uid peer = RelayTable::peer_uid(kv.first);
+                spl::logf("        flow %02x%02x.. -> %02x%02x..  %s in the last 2s", kv.first[0],
+                          kv.first[1], peer[0], peer[1], spl::human_bytes(kv.second).c_str());
+            }
+            flow_.clear();
         }
     }
 }

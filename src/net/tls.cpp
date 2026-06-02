@@ -94,14 +94,19 @@ std::optional<TlsContext> TlsContext::server_from_files(const std::string& cert,
     return TlsContext(ctx);
 }
 
-std::optional<TlsContext> TlsContext::client_insecure(std::string* err) {
+std::optional<TlsContext> TlsContext::client(std::string* err) {
     SSL_CTX* ctx = new_ctx(TLS_client_method());
     if (!ctx) {
         if (err) *err = tls_err("SSL_CTX_new");
         return std::nullopt;
     }
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);  // server is untrusted by design
+    SSL_CTX_set_default_verify_paths(ctx);              // system trust store
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);  // don't abort; report the result
     return TlsContext(ctx);
+}
+
+std::string tls_verify_error(long code) {
+    return X509_verify_cert_error_string(code);
 }
 
 TlsConn::~TlsConn() {
@@ -118,6 +123,7 @@ TlsConn& TlsConn::operator=(TlsConn&& o) noexcept {
         }
         ssl_ = o.ssl_;
         fd_ = std::move(o.fd_);
+        verify_result_ = o.verify_result_;
         o.ssl_ = nullptr;
     }
     return *this;
@@ -146,13 +152,18 @@ std::optional<TlsConn> TlsConn::connect(const TlsContext& ctx, Fd fd, const std:
         return std::nullopt;
     }
     SSL_set_fd(ssl, fd.get());
-    if (!sni.empty()) SSL_set_tlsext_host_name(ssl, sni.c_str());
+    if (!sni.empty()) {
+        SSL_set_tlsext_host_name(ssl, sni.c_str());
+        SSL_set1_host(ssl, sni.c_str());  // include the host in the verification result
+    }
     if (SSL_connect(ssl) <= 0) {
         if (err) *err = tls_err("SSL_connect");
         SSL_free(ssl);
         return std::nullopt;
     }
-    return TlsConn(ssl, std::move(fd));
+    TlsConn conn(ssl, std::move(fd));
+    conn.verify_result_ = SSL_get_verify_result(ssl);
+    return conn;
 }
 
 bool TlsConn::read_exact(uint8_t* buf, size_t n) {

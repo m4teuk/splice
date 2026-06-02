@@ -19,6 +19,7 @@
 #include "native/native.h"
 #include "net/socket.h"
 #include "net/tls.h"
+#include "peer/runtime.h"
 #include "peer/store.h"
 #include "proto/frame.h"
 #include "proto/pairing.h"
@@ -296,9 +297,10 @@ void usage() {
 }  // namespace
 
 int pair_main(int argc, char** argv) {
-    std::string code_arg, server = "127.0.0.1", name;
-    uint16_t port = 7777;
-    bool verbose = false;
+    PeerOpts dopts = default_peer_opts();
+    std::string code_arg, server = dopts.server, name;
+    uint16_t port = dopts.port;
+    bool verbose = false, insecure = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -321,6 +323,8 @@ int pair_main(int argc, char** argv) {
             auto v = need("--name");
             if (!v) return 2;
             name = v;
+        } else if (a == "--insecure") {
+            insecure = true;
         } else if (a == "-v" || a == "--verbose") {
             verbose = true;
         } else if (a == "-h" || a == "--help") {
@@ -338,7 +342,7 @@ int pair_main(int argc, char** argv) {
     const bool is_leader = code_arg.empty();
     std::string err;
 
-    auto ctx = net::TlsContext::client_insecure(&err);
+    auto ctx = net::TlsContext::client(&err);
     if (!ctx) {
         spl::logf("spl pair: tls: %s", err.c_str());
         return 1;
@@ -349,10 +353,34 @@ int pair_main(int argc, char** argv) {
         return 1;
     }
     net::set_recv_timeout(fd.get(), 70000);
-    auto conn = net::TlsConn::connect(*ctx, std::move(fd), "splice", &err);
+    auto conn = net::TlsConn::connect(*ctx, std::move(fd), server, &err);
     if (!conn) {
         spl::logf("spl pair: tls connect: %s", err.c_str());
         return 1;
+    }
+    if (conn->verify_result() != 0) {  // not X509_V_OK
+        std::string why = net::tls_verify_error(conn->verify_result());
+        if (insecure) {
+            if (verbose)
+                spl::logf("[tls] server cert unverified (%s); continuing (--insecure)",
+                          why.c_str());
+        } else {
+            std::fprintf(stderr,
+                         "\n!! WARNING: could not verify the TLS certificate of server '%s'.\n"
+                         "   Reason: %s\n"
+                         "   The connection is ENCRYPTED but NOT AUTHENTICATED -- you may be\n"
+                         "   talking to an impostor relay. Your pairing code (SPAKE2) still\n"
+                         "   protects the pairing itself; a fake server can only disrupt it.\n"
+                         "   Continue anyway? [y/N] ",
+                         server.c_str(), why.c_str());
+            std::fflush(stderr);
+            std::string line;
+            std::getline(std::cin, line);
+            if (line.empty() || (line[0] != 'y' && line[0] != 'Y')) {
+                spl::logf("aborted (use --insecure to skip this check).");
+                return 1;
+            }
+        }
     }
 
     std::string spake_code;
