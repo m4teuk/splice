@@ -121,6 +121,33 @@ def main():
         assert rd("proj/a.bin") == a and rd("proj/sub/b.bin") == b
         print("  multi-file + directory OK (3 files, tree preserved)")
 
+        # 5. sender started *before* the receiver: `spl send` must wait and retry
+        # past a connect-fail window until `spl receive` appears, then transfer.
+        data = os.urandom(80 * 1024)
+        sp = mkfile(data)
+        rdir = tempfile.mkdtemp()
+        snd = subprocess.Popen(
+            [SPL, "send", "thefollower", sp + ":got.bin", "--server", "127.0.0.1",
+             "--port", str(port)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=dict(os.environ, SPL_CONFIG_DIR=ld),
+        )
+        time.sleep(12)  # past a per-attempt connect budget -> at least one retry
+        assert snd.poll() is None, "sender should still be waiting for the peer, not exited"
+        rcv = subprocess.Popen(
+            [SPL, "receive", "theleader", "--server", "127.0.0.1", "--port", str(port)],
+            cwd=rdir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=dict(os.environ, SPL_CONFIG_DIR=fd),
+        )
+        assert snd.wait(40) == 0, "sender did not complete after the receiver came online"
+        try:
+            rcv.wait(10)
+        except subprocess.TimeoutExpired:
+            rcv.kill()
+        with open(os.path.join(rdir, "got.bin"), "rb") as f:
+            assert f.read() == data
+        print("  sender-first OK (waited for receiver, then transferred)")
+
         print("FILE E2E PASSED")
     finally:
         stop(srv)

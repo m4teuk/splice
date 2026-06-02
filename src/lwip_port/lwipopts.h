@@ -48,6 +48,10 @@
 #define TCP_WND (8 * TCP_MSS)
 #define TCP_SND_BUF (8 * TCP_MSS)
 
+// `spl send` retries the connect until the peer comes online, so let an individual
+// attempt give up quickly (default is 6) — the retry loop keeps trying.
+#define TCP_SYNMAXRTX 3
+
 #define LWIP_STATS 0
 #define LWIP_DEBUG 0
 

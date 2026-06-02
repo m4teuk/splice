@@ -218,6 +218,8 @@ int send_main(int argc, char** argv) {
     int result = 1;
     bool tty = isatty(STDERR_FILENO);
     Millis last_prog = 0, t_start = 0;
+    bool established = false, waiting_printed = false, retry_pending = false;
+    Millis last_attempt = 0;
 
     auto send_next = [&]() {
         // Open the next readable file (re-stating its size), skipping any we can no
@@ -278,54 +280,70 @@ int send_main(int argc, char** argv) {
         }
     };
 
-    rt->ns().connect(
-        rt->peer_addr(), kFilePort,
-        [&](TcpConn* c) {
-            conn = c;
-            c->on_writable = pump;  // installed once for the connection; gated by `streaming`
-            c->on_recv = [&](ByteSpan b) {
-                inbuf.insert(inbuf.end(), b.begin(), b.end());
-                Bytes payload;
-                while (take_frame(inbuf, &payload)) {
-                    if (payload.empty()) continue;
-                    uint8_t t = payload[0];
-                    if (t == kAccept) {
-                        t_start = mono_ms();  // file already open from send_next()
-                        streaming = true;
-                        pump();
-                    } else if (t == kSkip) {
-                        if (opts.verbose)
-                            spl::logf("[send] peer skipped %s", items[idx].relpath.c_str());
-                        if (cur_open) {
-                            file.close();
-                            cur_open = false;
-                        }
-                        ++idx;
-                        send_next();
-                    } else if (t == kCancel) {
-                        ByteReader r(as_span(payload));
-                        r.u8();
-                        Bytes reason = r.lp16();
-                        spl::logf("spl send: cancelled by peer: %.*s",
-                                  static_cast<int>(reason.size()),
-                                  reinterpret_cast<const char*>(reason.data()));
-                        g_stop.store(true);
-                    } else if (t == kDone) {
-                        result = 0;
-                        std::printf("sent %zu file%s\n", sent_count, sent_count == 1 ? "" : "s");
-                        conn->close();
-                        g_stop.store(true);
+    auto on_connected = [&](TcpConn* c) {
+        established = true;
+        conn = c;
+        c->on_writable = pump;  // installed once for the connection; gated by `streaming`
+        c->on_recv = [&](ByteSpan b) {
+            inbuf.insert(inbuf.end(), b.begin(), b.end());
+            Bytes payload;
+            while (take_frame(inbuf, &payload)) {
+                if (payload.empty()) continue;
+                uint8_t t = payload[0];
+                if (t == kAccept) {
+                    t_start = mono_ms();  // file already open from send_next()
+                    streaming = true;
+                    pump();
+                } else if (t == kSkip) {
+                    if (opts.verbose)
+                        spl::logf("[send] peer skipped %s", items[idx].relpath.c_str());
+                    if (cur_open) {
+                        file.close();
+                        cur_open = false;
                     }
+                    ++idx;
+                    send_next();
+                } else if (t == kCancel) {
+                    ByteReader r(as_span(payload));
+                    r.u8();
+                    Bytes reason = r.lp16();
+                    spl::logf("spl send: cancelled by peer: %.*s", static_cast<int>(reason.size()),
+                              reinterpret_cast<const char*>(reason.data()));
+                    g_stop.store(true);
+                } else if (t == kDone) {
+                    result = 0;
+                    std::printf("sent %zu file%s\n", sent_count, sent_count == 1 ? "" : "s");
+                    conn->close();
+                    g_stop.store(true);
                 }
-            };
-            c->on_closed = [&]() { g_stop.store(true); };
-            c->on_error = [&]() { g_stop.store(true); };
-            send_next();  // first OFFER
-        },
-        [&]() {
-            spl::logf("spl send: could not connect to '%s'", name.c_str());
-            g_stop.store(true);
+            }
+        };
+        c->on_closed = [&]() { g_stop.store(true); };
+        c->on_error = [&]() { g_stop.store(true); };
+        send_next();  // first OFFER
+    };
+
+    // Connect, retrying until the peer comes online (symmetric with how `spl
+    // receive` waits). on_fail fires per failed attempt; a real post-connect error
+    // goes through on_error instead.
+    auto attempt = [&]() {
+        last_attempt = mono_ms();
+        retry_pending = false;
+        rt->ns().connect(rt->peer_addr(), kFilePort, on_connected, [&]() {
+            if (established) return;
+            if (!waiting_printed) {
+                std::fprintf(stderr,
+                             "spl send: waiting for '%s' to come online (Ctrl-C to stop)...\n",
+                             name.c_str());
+                waiting_printed = true;
+            }
+            retry_pending = true;
         });
+    };
+    rt->on_app_tick = [&](Millis now) {
+        if (!established && retry_pending && now - last_attempt >= 1000) attempt();
+    };
+    attempt();
 
     rt->run();
     return result;

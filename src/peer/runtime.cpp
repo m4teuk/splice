@@ -33,7 +33,10 @@ PeerRuntime::PeerRuntime(ConnRecord rec, net::Fd udp, Endpoint server, bool verb
     ns_.configure(own_);
     pm_.on_inner = [this](ByteSpan inner, Path) { ns_.input(inner); };
     ns_.on_output = [this](ByteSpan ip) { pm_.send_inner(ip); };
-    pm_.on_tick = [this](Millis) { ns_.check_timeouts(); };
+    pm_.on_tick = [this](Millis now) {
+        ns_.check_timeouts();
+        if (on_app_tick) on_app_tick(now);
+    };
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);

@@ -41,7 +41,11 @@ class TcpConn {
 
     std::function<void(TcpConn*)> connect_cb;
     std::function<void()> fail_cb;
-    void attach();  // install recv/sent callbacks (after connect/accept)
+    void attach();  // install recv/sent callbacks (after connect/accept); marks established
+
+    // A connect attempt that failed before it ever established: its pcb is gone and
+    // it was never handed to the app, so it is safe to reap.
+    bool dead_unconnected() const { return !pcb_ && !connected_; }
 
  private:
     void flush();
@@ -50,6 +54,7 @@ class TcpConn {
 
     tcp_pcb* pcb_;
     Bytes pending_;
+    bool connected_ = false;  // ever established (connect succeeded or accepted)
     bool want_close_ = false;
     bool tx_shutdown_pending_ = false;
 };

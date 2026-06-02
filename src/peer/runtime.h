@@ -38,6 +38,9 @@ class PeerRuntime {
 
     PathManager& pm() { return pm_; }
     Netstack& ns() { return ns_; }
+
+    // Optional per-loop hook for the command (e.g. `spl send` retrying its connect).
+    std::function<void(Millis)> on_app_tick;
     const ConnRecord& record() const { return rec_; }
     const proto::Ip6& own_addr() const { return own_; }
     const proto::Ip6& peer_addr() const { return peer_; }

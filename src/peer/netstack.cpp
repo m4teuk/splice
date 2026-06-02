@@ -1,5 +1,6 @@
 #include "peer/netstack.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -63,6 +64,7 @@ TcpConn::TcpConn(tcp_pcb* pcb) : pcb_(pcb) {
 
 void TcpConn::attach() {
     if (!pcb_) return;
+    connected_ = true;  // established (connect succeeded or we accepted it)
     tcp_recv(pcb_, tramp_recv);
     tcp_sent(pcb_, tramp_sent);
 }
@@ -143,7 +145,9 @@ size_t TcpConn::sndbuf() const { return pcb_ ? tcp_sndbuf(pcb_) : 0; }
 
 void TcpConn::on_lwip_err(int) {
     pcb_ = nullptr;  // lwIP already freed the pcb
-    if (on_error)
+    if (!connected_ && fail_cb)
+        fail_cb();  // the connect attempt failed before establishing — surface it
+    else if (on_error)
         on_error();
     else if (on_closed)
         on_closed();
@@ -191,6 +195,13 @@ void Netstack::input(ByteSpan ip_packet) {
 void Netstack::check_timeouts() {
     sys_check_timeouts();
     if (netif_) netif_poll(netif_);  // process loopback queue
+    // Reap failed connect attempts so `spl send`'s retry-until-online loop can run
+    // indefinitely without accumulating dead connections.
+    conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
+                                [](const std::unique_ptr<TcpConn>& c) {
+                                    return c->dead_unconnected();
+                                }),
+                 conns_.end());
 }
 
 void Netstack::emit(pbuf* p) {
