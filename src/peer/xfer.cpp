@@ -8,8 +8,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -18,18 +20,23 @@
 #include "common/time.h"
 #include "peer/runtime.h"
 
+namespace fs = std::filesystem;
+
 namespace spl::peer {
 
 namespace {
 
 constexpr uint16_t kFilePort = 7772;
-constexpr uint32_t kMaxCtrlFrame = 64 * 1024;  // OFFER/ACCEPT/CANCEL are tiny
+constexpr uint32_t kMaxCtrlFrame = 64 * 1024;
 
-// Control message types.
-constexpr uint8_t kOffer = 0x01;   // [u16 name_len][name][u64 size]
-constexpr uint8_t kAccept = 0x02;  // (no body)
-constexpr uint8_t kCancel = 0x03;  // [u16 reason_len][reason]
-constexpr uint8_t kDone = 0x04;    // receiver -> sender: file written successfully
+// Control messages (length-prefixed frames). Between an ACCEPT and the next
+// frame, the sender streams exactly `size` raw bytes of file data.
+constexpr uint8_t kOffer = 0x01;   // [u16 rel_len][relpath][u64 size]
+constexpr uint8_t kAccept = 0x02;  // receiver -> sender: send this file's data
+constexpr uint8_t kCancel = 0x03;  // receiver -> sender: abort the whole transfer
+constexpr uint8_t kDone = 0x04;    // receiver -> sender: everything written
+constexpr uint8_t kSkip = 0x05;    // receiver -> sender: skip this file, continue
+constexpr uint8_t kEnd = 0x06;     // sender -> receiver: no more files
 
 Bytes frame(ByteSpan payload) {
     ByteWriter w;
@@ -37,16 +44,16 @@ Bytes frame(ByteSpan payload) {
     w.raw(payload);
     return w.take();
 }
-Bytes encode_offer(const std::string& name, uint64_t size) {
+Bytes encode_offer(const std::string& rel, uint64_t size) {
     ByteWriter p;
     p.u8(kOffer);
-    p.lp16(as_span(name));
+    p.lp16(as_span(rel));
     p.u64(size);
     return frame(as_span(p.data()));
 }
-Bytes encode_accept() {
+Bytes one_byte(uint8_t t) {
     ByteWriter p;
-    p.u8(kAccept);
+    p.u8(t);
     return frame(as_span(p.data()));
 }
 Bytes encode_cancel(const std::string& reason) {
@@ -55,35 +62,33 @@ Bytes encode_cancel(const std::string& reason) {
     p.lp16(as_span(reason));
     return frame(as_span(p.data()));
 }
-Bytes encode_done() {
-    ByteWriter p;
-    p.u8(kDone);
-    return frame(as_span(p.data()));
-}
 
-// Reduce a peer-supplied name to a safe basename in the current directory: drop
-// any directory part (which neutralises ../ traversal and absolute paths) and
-// reject the dot names. No blacklist.
-std::string sanitize_filename(const std::string& s) {
-    auto slash = s.find_last_of('/');
-    std::string base = slash == std::string::npos ? s : s.substr(slash + 1);
-    std::string out;
-    for (char c : base) {
-        if (c == '\0' || c == '/') continue;
-        out += c;
+// A peer-supplied relative path, reduced to a safe path under the cwd: split on
+// '/', drop empty / "." / ".." components (which neutralises traversal and
+// absolute paths), keeping the subdirectory structure. No blacklist.
+std::string sanitize_relpath(const std::string& rel) {
+    std::vector<std::string> parts;
+    std::stringstream ss(rel);
+    std::string c;
+    while (std::getline(ss, c, '/')) {
+        if (c.empty() || c == "." || c == "..") continue;
+        std::string clean;
+        for (char ch : c)
+            if (ch != '\0') clean += ch;
+        if (!clean.empty()) parts.push_back(clean);
     }
-    if (out.empty() || out == "." || out == "..") return "received_file";
+    if (parts.empty()) return "received_file";
+    std::string out = parts[0];
+    for (size_t i = 1; i < parts.size(); ++i) out += "/" + parts[i];
     return out;
 }
 
-bool file_exists(const std::string& path) {
+bool path_exists(const std::string& p) {
     struct stat st;
-    return ::stat(path.c_str(), &st) == 0;
+    return ::stat(p.c_str(), &st) == 0;
 }
 
-// In-place progress line on a TTY (throttled); silent when stderr is redirected,
-// so it never pollutes piped/captured output.
-void print_progress(bool tty, Millis* last, Millis start, const char* verb,
+void print_progress(bool tty, Millis* last, Millis start, const std::string& verb,
                     const std::string& name, uint64_t done, uint64_t total) {
     if (!tty) return;
     Millis now = mono_ms();
@@ -93,24 +98,60 @@ void print_progress(bool tty, Millis* last, Millis start, const char* verb,
     int pct = total ? static_cast<int>(done * 100 / total) : 100;
     double secs = (now - start) / 1000.0;
     uint64_t rate = secs > 0.0 ? static_cast<uint64_t>(done / secs) : 0;
-    std::fprintf(stderr, "\r%s %s: %3d%% (%s / %s) %s/s   ", verb, name.c_str(), pct,
+    std::fprintf(stderr, "\r%s %s: %3d%% (%s / %s) %s/s   ", verb.c_str(), name.c_str(), pct,
                  human_bytes(done).c_str(), human_bytes(total).c_str(), human_bytes(rate).c_str());
     if (fin) std::fputc('\n', stderr);
     std::fflush(stderr);
 }
 
-std::string basename_of(const std::string& path) {
-    auto slash = path.find_last_of('/');
-    return slash == std::string::npos ? path : path.substr(slash + 1);
+struct Item {
+    std::string abspath;
+    std::string relpath;  // name shown to / written by the receiver
+    uint64_t size;
+};
+
+// Expands one `path[:newname]` argument into transfer items (a directory becomes
+// all of its regular files, keyed under the directory's name).
+bool enumerate(const std::string& arg, std::vector<Item>* items, std::string* err) {
+    std::string path = arg, rename;
+    auto colon = arg.rfind(':');
+    if (colon != std::string::npos) {
+        path = arg.substr(0, colon);
+        rename = arg.substr(colon + 1);
+    }
+    std::error_code ec;
+    auto st = fs::status(path, ec);
+    if (ec) {
+        *err = "cannot access '" + path + "'";
+        return false;
+    }
+    if (fs::is_regular_file(st)) {
+        std::string rel = rename.empty() ? fs::path(path).filename().string() : rename;
+        items->push_back({path, rel, static_cast<uint64_t>(fs::file_size(path))});
+        return true;
+    }
+    if (fs::is_directory(st)) {
+        std::string norm = path;
+        while (norm.size() > 1 && norm.back() == '/') norm.pop_back();
+        std::string root = rename.empty() ? fs::path(norm).filename().string() : rename;
+        for (auto& e : fs::recursive_directory_iterator(path, ec)) {
+            if (e.is_regular_file()) {
+                std::string sub = fs::relative(e.path(), path, ec).generic_string();
+                items->push_back({e.path().string(), root + "/" + sub,
+                                  static_cast<uint64_t>(e.file_size())});
+            }
+        }
+        return true;
+    }
+    *err = "'" + path + "' is not a file or directory";
+    return false;
 }
 
-// Tries to pull one [u32 len][payload] frame off the front of buf.
 bool take_frame(Bytes& buf, Bytes* payload) {
     if (buf.size() < 4) return false;
     uint32_t len = (uint32_t(buf[0]) << 24) | (uint32_t(buf[1]) << 16) | (uint32_t(buf[2]) << 8) |
                    buf[3];
-    if (len > kMaxCtrlFrame) return false;  // caller treats false+oversize as error via separate check
-    if (buf.size() < 4u + len) return false;
+    if (len > kMaxCtrlFrame || buf.size() < 4u + len) return false;
     payload->assign(buf.begin() + 4, buf.begin() + 4 + len);
     buf.erase(buf.begin(), buf.begin() + 4 + len);
     return true;
@@ -137,33 +178,24 @@ int send_main(int argc, char** argv) {
     std::vector<std::string> pos;
     parse_common(argc, argv, &opts, &pos);
     if (pos.size() < 2) {
-        spl::logf("usage: spl send <name> <path[:newname]>");
+        spl::logf("usage: spl send <name> <path[:newname]> [path ...]");
         return 2;
     }
     const std::string name = pos[0];
-    const std::string arg = pos[1];
 
-    std::string path = arg, newname;
-    auto colon = arg.rfind(':');
-    if (colon != std::string::npos) {
-        path = arg.substr(0, colon);
-        newname = arg.substr(colon + 1);
-    }
-    if (newname.empty()) newname = basename_of(path);
-
-    struct stat st;
-    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
-        spl::logf("spl send: cannot read file '%s'", path.c_str());
-        return 1;
-    }
-    const uint64_t size = static_cast<uint64_t>(st.st_size);
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        spl::logf("spl send: cannot open '%s'", path.c_str());
-        return 1;
-    }
-
+    std::vector<Item> items;
     std::string err;
+    for (size_t i = 1; i < pos.size(); ++i) {
+        if (!enumerate(pos[i], &items, &err)) {
+            spl::logf("spl send: %s", err.c_str());
+            return 1;
+        }
+    }
+    if (items.empty()) {
+        spl::logf("spl send: nothing to send");
+        return 1;
+    }
+
     auto rt = PeerRuntime::create(name, opts, &err);
     if (!rt) {
         spl::logf("spl send: %s", err.c_str());
@@ -172,18 +204,32 @@ int send_main(int argc, char** argv) {
 
     TcpConn* conn = nullptr;
     Bytes inbuf;
-    uint64_t remaining = size;
+    size_t idx = 0, sent_count = 0;
+    std::ifstream file;
+    bool cur_open = false, prog_done = false;
+    uint64_t remaining = 0;
     int result = 1;
-    bool tty = isatty(STDERR_FILENO), prog_done = false;
+    bool tty = isatty(STDERR_FILENO);
     Millis last_prog = 0, t_start = 0;
 
+    auto send_next = [&]() {
+        if (idx < items.size()) {
+            Bytes o = encode_offer(items[idx].relpath, items[idx].size);
+            conn->send(as_span(o));
+        } else {
+            Bytes e = one_byte(kEnd);
+            conn->send(as_span(e));
+        }
+    };
+
     auto pump = [&]() {
-        if (!conn) return;
+        if (!conn || !cur_open) return;
         std::vector<char> chunk;
         while (remaining > 0) {
             size_t space = conn->sndbuf();
             if (space == 0) break;
-            size_t n = static_cast<size_t>(std::min<uint64_t>(remaining, std::min<size_t>(space, 32768)));
+            size_t n =
+                static_cast<size_t>(std::min<uint64_t>(remaining, std::min<size_t>(space, 32768)));
             chunk.resize(n);
             file.read(chunk.data(), static_cast<std::streamsize>(n));
             std::streamsize got = file.gcount();
@@ -191,14 +237,21 @@ int send_main(int argc, char** argv) {
             conn->send(ByteSpan(reinterpret_cast<uint8_t*>(chunk.data()), static_cast<size_t>(got)));
             remaining -= static_cast<uint64_t>(got);
         }
+        const Item& it = items[idx];
+        char verb[48];
+        std::snprintf(verb, sizeof(verb), "sending [%zu/%zu]", idx + 1, items.size());
         if (remaining > 0) {
-            print_progress(tty, &last_prog, t_start, "sending", newname, size - remaining, size);
+            print_progress(tty, &last_prog, t_start, verb, it.relpath, it.size - remaining, it.size);
         } else if (!prog_done) {
-            prog_done = true;  // final 100% line once (the rate at completion)
-            print_progress(tty, &last_prog, t_start, "sending", newname, size, size);
+            prog_done = true;
+            print_progress(tty, &last_prog, t_start, verb, it.relpath, it.size, it.size);
+            file.close();
+            cur_open = false;
+            conn->on_writable = nullptr;
+            ++sent_count;
+            ++idx;
+            send_next();
         }
-        // The receiver knows the size, so we don't FIN here; we wait for its DONE
-        // (sending a FIN early would race the receiver's close and trigger a RST).
     };
 
     rt->ns().connect(
@@ -208,27 +261,33 @@ int send_main(int argc, char** argv) {
             c->on_recv = [&](ByteSpan b) {
                 inbuf.insert(inbuf.end(), b.begin(), b.end());
                 Bytes payload;
-                while (take_frame(inbuf, &payload)) {  // `conn` persists; param `c` does not
+                while (take_frame(inbuf, &payload)) {
                     if (payload.empty()) continue;
-                    if (payload[0] == kAccept) {
-                        if (opts.verbose)
-                            spl::logf("[send] peer accepted; sending %llu bytes",
-                                      static_cast<unsigned long long>(size));
+                    uint8_t t = payload[0];
+                    if (t == kAccept) {
+                        file.open(items[idx].abspath, std::ios::binary);
+                        remaining = items[idx].size;
+                        cur_open = true;
+                        prog_done = false;
                         t_start = mono_ms();
                         conn->on_writable = pump;
                         pump();
-                    } else if (payload[0] == kCancel) {
+                    } else if (t == kSkip) {
+                        if (opts.verbose) spl::logf("[send] peer skipped %s",
+                                                    items[idx].relpath.c_str());
+                        ++idx;
+                        send_next();
+                    } else if (t == kCancel) {
                         ByteReader r(as_span(payload));
                         r.u8();
                         Bytes reason = r.lp16();
-                        spl::logf("spl send: declined by peer: %.*s",
+                        spl::logf("spl send: cancelled by peer: %.*s",
                                   static_cast<int>(reason.size()),
                                   reinterpret_cast<const char*>(reason.data()));
                         g_stop.store(true);
-                    } else if (payload[0] == kDone) {
+                    } else if (t == kDone) {
                         result = 0;
-                        std::printf("sent '%s' (%llu bytes)\n", newname.c_str(),
-                                    static_cast<unsigned long long>(size));
+                        std::printf("sent %zu file%s\n", sent_count, sent_count == 1 ? "" : "s");
                         conn->close();
                         g_stop.store(true);
                     }
@@ -236,8 +295,7 @@ int send_main(int argc, char** argv) {
             };
             c->on_closed = [&]() { g_stop.store(true); };
             c->on_error = [&]() { g_stop.store(true); };
-            Bytes offer = encode_offer(newname, size);
-            c->send(as_span(offer));
+            send_next();  // first OFFER
         },
         [&]() {
             spl::logf("spl send: could not connect to '%s'", name.c_str());
@@ -265,74 +323,86 @@ int receive_main(int argc, char** argv) {
         return 1;
     }
 
-    enum State { WaitOffer, Writing, Done } state = WaitOffer;
+    enum State { WaitOffer, Writing } state = WaitOffer;
     Bytes inbuf;
-    uint64_t remaining = 0;
+    uint64_t remaining = 0, total = 0;
     std::ofstream out;
     std::string final_name;
+    size_t recv_count = 0;
     int result = 1;
     TcpConn* conn = nullptr;
     bool tty = isatty(STDERR_FILENO);
     Millis last_prog = 0, t_start = 0;
-    uint64_t total = 0;
 
     auto process = [&]() {
         for (;;) {
             if (state == WaitOffer) {
-                if (inbuf.size() >= 4) {
-                    uint32_t len = (uint32_t(inbuf[0]) << 24) | (uint32_t(inbuf[1]) << 16) |
-                                   (uint32_t(inbuf[2]) << 8) | inbuf[3];
-                    if (len > kMaxCtrlFrame) {
-                        spl::logf("spl receive: oversize control frame");
-                        g_stop.store(true);
-                        return;
-                    }
-                }
                 Bytes payload;
-                if (!take_frame(inbuf, &payload)) return;  // need more
-                ByteReader r(as_span(payload));
-                if (r.u8() != kOffer) {
+                if (!take_frame(inbuf, &payload)) return;
+                if (payload.empty()) {
                     g_stop.store(true);
                     return;
                 }
+                if (payload[0] == kEnd) {
+                    Bytes d = one_byte(kDone);
+                    conn->send(as_span(d));
+                    result = 0;
+                    std::printf("received %zu file%s\n", recv_count, recv_count == 1 ? "" : "s");
+                    conn->close();
+                    g_stop.store(true);
+                    return;
+                }
+                if (payload[0] != kOffer) {
+                    g_stop.store(true);
+                    return;
+                }
+                ByteReader r(as_span(payload));
+                r.u8();
                 Bytes nm = r.lp16();
                 uint64_t size = r.u64();
                 if (!r.ok()) {
                     g_stop.store(true);
                     return;
                 }
-                std::string offered(nm.begin(), nm.end());
-                std::string target = sanitize_filename(offered);
+                std::string target = sanitize_relpath(std::string(nm.begin(), nm.end()));
 
-                while (file_exists(target)) {
-                    std::printf("'%s' already exists. [o]verwrite / [c]ancel / [r]ename? ",
+                bool skip = false, cancel = false;
+                while (path_exists(target)) {
+                    std::printf("'%s' exists. [o]verwrite / [s]kip / [r]ename / [c]ancel? ",
                                 target.c_str());
                     std::fflush(stdout);
                     std::string line;
                     std::getline(std::cin, line);
                     char ch = line.empty() ? 'c' : static_cast<char>(std::tolower(line[0]));
-                    if (ch == 'o') {
-                        break;
-                    } else if (ch == 'r') {
+                    if (ch == 'o') break;
+                    if (ch == 's') { skip = true; break; }
+                    if (ch == 'r') {
                         std::printf("new name: ");
                         std::fflush(stdout);
                         std::string nn;
                         std::getline(std::cin, nn);
-                        target = sanitize_filename(nn);
-                    } else {
-                        Bytes c = encode_cancel("declined");
-                        conn->send(as_span(c));
-                        conn->close();
-                        std::printf("cancelled\n");
-                        g_stop.store(true);
-                        return;
-                    }
+                        target = sanitize_relpath(nn);
+                    } else { cancel = true; break; }
+                }
+                if (cancel) {
+                    Bytes c = encode_cancel("cancelled");
+                    conn->send(as_span(c));
+                    conn->close();
+                    std::printf("cancelled\n");
+                    g_stop.store(true);
+                    return;
+                }
+                if (skip) {
+                    conn->send(as_span(one_byte(kSkip)));
+                    continue;  // wait for the next OFFER
                 }
 
+                std::error_code ec;
+                fs::path parent = fs::path(target).parent_path();
+                if (!parent.empty()) fs::create_directories(parent, ec);
                 out.open(target, std::ios::binary | std::ios::trunc);
                 if (!out) {
-                    Bytes c = encode_cancel("cannot write file");
-                    conn->send(as_span(c));
+                    conn->send(as_span(encode_cancel("cannot write '" + target + "'")));
                     conn->close();
                     spl::logf("spl receive: cannot write '%s'", target.c_str());
                     g_stop.store(true);
@@ -342,11 +412,7 @@ int receive_main(int argc, char** argv) {
                 remaining = size;
                 total = size;
                 t_start = mono_ms();
-                Bytes acc = encode_accept();
-                conn->send(as_span(acc));
-                if (opts.verbose)
-                    spl::logf("[receive] writing '%s' (%llu bytes)", target.c_str(),
-                              static_cast<unsigned long long>(size));
+                conn->send(as_span(one_byte(kAccept)));
                 state = Writing;
             }
             if (state == Writing) {
@@ -356,21 +422,16 @@ int receive_main(int argc, char** argv) {
                           static_cast<std::streamsize>(take));
                 remaining -= take;
                 inbuf.erase(inbuf.begin(), inbuf.begin() + take);
-                print_progress(tty, &last_prog, t_start, "receiving", final_name,
-                               total - remaining, total);
+                print_progress(tty, &last_prog, t_start, "receiving", final_name, total - remaining,
+                               total);
                 if (remaining == 0) {
                     out.close();
-                    state = Done;
-                    result = 0;
-                    Bytes d = encode_done();  // tell the sender it's safely written
-                    conn->send(as_span(d));
-                    std::printf("received '%s'\n", final_name.c_str());
-                    conn->close();
-                    g_stop.store(true);
+                    ++recv_count;
+                    state = WaitOffer;
+                    continue;  // next OFFER / END
                 }
                 return;
             }
-            return;  // Done
         }
     };
 
@@ -381,7 +442,7 @@ int receive_main(int argc, char** argv) {
             process();
         };
         c->on_closed = [&]() {
-            if (state != Done) spl::logf("spl receive: transfer incomplete");
+            if (result != 0) spl::logf("spl receive: transfer incomplete");
             g_stop.store(true);
         };
         c->on_error = [&]() { g_stop.store(true); };

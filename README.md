@@ -80,8 +80,8 @@ Then talk over the tunnel. Send a file (optionally renaming it for the receiver)
 chat interactively, or manage connections:
 
 ```sh
-spl receive laptop                 # waits for an incoming file (writes to cwd)
-spl send phone ./report.pdf        # or  ./report.pdf:renamed.pdf   (s / r aliases work)
+spl receive laptop                 # waits for incoming files (writes under cwd)
+spl send phone ./report.pdf docs/  # one or more files/dirs; report.pdf:newname renames
 spl chat laptop                    # bidirectional stdin<->stdout pipe
 
 spl peer ls                        # list paired connections
@@ -89,11 +89,12 @@ spl peer rename laptop work        # rename
 spl peer remove work               # delete
 ```
 
-The receiver never silently overwrites: a name collision prompts
-`[o]verwrite / [c]ancel / [r]ename`, and incoming names are reduced to a safe
-basename in the current directory. Add `-v` to any command for verbose logging
-(the peer shows throughput by path — direct vs relay — and the server shows a live
-relay summary).
+You can send several files and directories in one command; directories are sent
+recursively with their subdirectory structure. The receiver never silently
+overwrites: a name collision prompts `[o]verwrite / [s]kip / [r]ename / [c]ancel`,
+and incoming paths are confined to the current directory (`..` and absolute paths
+are stripped). Add `-v` to any command for verbose logging (the peer shows
+throughput by path — direct vs relay — and the server shows a live relay summary).
 
 ### Config file
 

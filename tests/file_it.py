@@ -84,6 +84,43 @@ def main():
             assert f.read() == b"ORIGINAL", "existing file was clobbered on cancel"
         print("  collision OK (cancel preserves the existing file)")
 
+        # 4. multiple paths + a directory tree, with subdirs recreated safely.
+        work = tempfile.mkdtemp()
+        with open(os.path.join(work, "notes.txt"), "wb") as f:
+            f.write(b"hello notes")
+        d = os.path.join(work, "proj")
+        os.makedirs(os.path.join(d, "sub"))
+        a, b = os.urandom(5000), os.urandom(3000)
+        with open(os.path.join(d, "a.bin"), "wb") as f:
+            f.write(a)
+        with open(os.path.join(d, "sub", "b.bin"), "wb") as f:
+            f.write(b)
+        rdir = tempfile.mkdtemp()
+        recv = subprocess.Popen(
+            [SPL, "receive", "theleader", "--server", "127.0.0.1", "--port", str(port)],
+            cwd=rdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=dict(os.environ, SPL_CONFIG_DIR=fd),
+        )
+        time.sleep(0.8)
+        send = subprocess.run(
+            [SPL, "send", "thefollower", os.path.join(work, "notes.txt"), d, "--server",
+             "127.0.0.1", "--port", str(port)],
+            capture_output=True, text=True, timeout=60, env=dict(os.environ, SPL_CONFIG_DIR=ld),
+        )
+        assert send.returncode == 0, f"multi-send failed: {send.stdout}"
+        try:
+            recv.wait(15)
+        except subprocess.TimeoutExpired:
+            recv.kill()
+
+        def rd(p):
+            with open(os.path.join(rdir, p), "rb") as f:
+                return f.read()
+
+        assert rd("notes.txt") == b"hello notes"
+        assert rd("proj/a.bin") == a and rd("proj/sub/b.bin") == b
+        print("  multi-file + directory OK (3 files, tree preserved)")
+
         print("FILE E2E PASSED")
     finally:
         stop(srv)
