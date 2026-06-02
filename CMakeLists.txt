@@ -73,6 +73,11 @@ set(LWIP_INCLUDE_DIRS
 include(${LWIP_DIR}/src/Filelists.cmake)  # defines the lwipcore target (EXCLUDE_FROM_ALL)
 # Compile our NO_SYS port (sys_now) into lwipcore so it resolves regardless of link order.
 target_sources(lwipcore PRIVATE ${CMAKE_SOURCE_DIR}/src/lwip_port/sys_port.c)
+# lwIP defines htons/ntohs/htonl/ntohl, which clang (macOS) flags as redefining the
+# SDK's identical macros. Same behaviour; silence the noise on clang only.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  target_compile_options(lwipcore PRIVATE -Wno-macro-redefined)
+endif()
 add_library(spl_lwip INTERFACE)
 target_include_directories(spl_lwip INTERFACE ${LWIP_INCLUDE_DIRS})
 target_link_libraries(spl_lwip INTERFACE lwipcore)
@@ -92,6 +97,11 @@ add_library(spl_peer STATIC
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
 target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip)
+# netstack.cpp includes lwIP headers — silence the htons/ntohs redefinition noise
+# on clang (see lwipcore above).
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(spl_peer PRIVATE -Wno-macro-redefined)
+endif()
 
 # --- spl_server: relay + pairing rendezvous + entrypoint ---
 find_package(Threads REQUIRED)
@@ -153,6 +163,9 @@ if(SPL_BUILD_TESTS)
     tests/test_config.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(spl_tests PRIVATE -Wno-macro-redefined)  # test_netstack.cpp includes lwIP
+  endif()
 
   include(GoogleTest)
   gtest_discover_tests(spl_tests)
