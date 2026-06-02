@@ -23,6 +23,12 @@
 #define LWIP_IPV6_DHCP6 0
 #define LWIP_ICMP6 1
 #define LWIP_IPV6_MLD 1
+// No IPv6 fragmentation: TCP_MSS keeps segments well under the netif MTU, so we
+// never fragment. Reassembly is also disabled because on 64-bit hosts the
+// reassembly helper (an 8-byte pbuf pointer + 2 u16) exceeds the 8-byte fragment
+// header, tripping an assert in ip6_reass_tmr (the cyclic timer, fired ~1s in).
+#define LWIP_IPV6_FRAG 0
+#define LWIP_IPV6_REASS 0
 
 #define LWIP_TCP 1
 #define LWIP_UDP 1
