@@ -7,6 +7,28 @@ deny service — never read, inject, or MITM traffic (see [docs/DESIGN.md](docs/
 
 A single binary `spl` is the server *and* the peer.
 
+## Install
+
+Build from source and drop `spl` into `~/.local/bin` — no root:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/m4teuk/splice/main/install.sh | bash
+```
+
+or from a checkout:
+
+```sh
+git clone https://github.com/m4teuk/splice.git
+bash splice/install.sh
+rm -rf splice          # the binary now lives in ~/.local/bin
+```
+
+Rust is bootstrapped automatically; the C++ toolchain, CMake, Ninja, pkg-config and
+OpenSSL 3 headers must already be present — the script prints the one
+`apt`/`brew`/`dnf` command to install them if not (it never runs `sudo` itself).
+Ensure `~/.local/bin` is on your `PATH`. Then `spl pair` works against the default
+relay. To develop, or to run a server, build manually (below).
+
 ## Build
 
 Prerequisites: a C++20 compiler, **CMake ≥ 3.22**, Ninja, a **Rust toolchain**
