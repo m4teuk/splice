@@ -1,0 +1,129 @@
+name: release
+
+# Builds the `spl` binary for every supported platform on each push to main that
+# touches build inputs, and publishes them as a rolling "nightly" pre-release.
+# install.sh downloads these; it falls back to building from source when no prebuilt
+# binary fits. Keeping this keyed to main means the binaries track the same source
+# the fallback would clone — the two never diverge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'native/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+# A newer push supersedes an in-flight build; don't pile up rolling releases.
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            asset: spl-linux-x86_64
+          - runner: ubuntu-22.04-arm
+            asset: spl-linux-aarch64
+          - runner: macos-13          # Intel
+            asset: spl-macos-x86_64
+            macos_target: '10.15'
+          - runner: macos-14          # Apple Silicon
+            asset: spl-macos-arm64
+            macos_target: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive       # vendored lwIP
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev
+
+      - name: Install build deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja openssl@3 pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable   # for the native/ crate (Corrosion)
+
+      # Static OpenSSL (+ static libstdc++/libgcc on Linux) so the binary depends
+      # only on universally-present system libs — no libssl.so.3 runtime dependency.
+      - name: Configure
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPL_BUILD_TESTS=OFF \
+              -DOPENSSL_USE_STATIC_LIBS=ON \
+              -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          else
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DSPL_BUILD_TESTS=OFF \
+              -DOPENSSL_USE_STATIC_LIBS=ON \
+              -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+          fi
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+
+      - name: Build
+        run: cmake --build build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+
+      - name: Smoke test
+        run: ./build/spl --version
+
+      - name: Package
+        run: |
+          cp build/spl "${{ matrix.asset }}"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish rolling release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write             # create/replace the release and its tag
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true    # all assets land flat in dist/
+
+      - name: Publish "nightly" pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Recreate the rolling release so its tag re-points to this commit and the
+          # asset set is exactly the four fresh binaries (no stale leftovers).
+          gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "nightly (rolling build from main)" \
+            --notes "Automatically built from main @ ${GITHUB_SHA:0:7}. These binaries track the latest main; \`install.sh\` downloads them. OpenSSL and libstdc++ are linked statically, so they depend only on the system C runtime (glibc/libgcc on Linux, system libc++ on macOS)." \
+            dist/spl-*

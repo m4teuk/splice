@@ -12,6 +12,19 @@ endif()
 
 option(SPL_BUILD_TESTS "Build unit tests" ON)
 
+# Capture the short git SHA at configure time so `spl --version` identifies which
+# commit a build came from — important for the rolling binaries published from main
+# (see .github/workflows/release.yml). Stale if you build without reconfiguring; CI
+# always configures fresh. Falls back to "unknown" outside a git checkout.
+execute_process(
+  COMMAND git -C ${CMAKE_SOURCE_DIR} rev-parse --short HEAD
+  OUTPUT_VARIABLE SPL_GIT_SHA
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(NOT SPL_GIT_SHA)
+  set(SPL_GIT_SHA "unknown")
+endif()
+
 include(FetchContent)
 
 # --- Corrosion: CMake <-> Cargo integration for the Rust shim crate (native/) ---
@@ -123,6 +136,7 @@ target_include_directories(spl PRIVATE
 # (spl_proto arrives transitively via spl_peer/spl_server; listing it again makes
 # the new Apple linker warn about a duplicate library.)
 target_link_libraries(spl PRIVATE spl_peer spl_server spl_native)
+target_compile_definitions(spl PRIVATE SPL_GIT_SHA="${SPL_GIT_SHA}")
 
 # The new Apple linker (ld-prime) warns about duplicate libraries pulled in
 # transitively, e.g. -lSystem from the Rust staticlib. Silence it where the flag

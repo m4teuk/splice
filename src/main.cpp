@@ -19,7 +19,12 @@
 
 namespace {
 
-constexpr const char* kVersion = "spl 0.1.0";
+// SPL_GIT_SHA is defined by CMake (target_compile_definitions); default keeps
+// non-CMake/standalone builds compiling.
+#ifndef SPL_GIT_SHA
+#define SPL_GIT_SHA "unknown"
+#endif
+constexpr const char* kVersion = "spl 0.1.0 (" SPL_GIT_SHA ")";
 
 int cmd_server(int argc, char** argv) {
     return spl::server::server_main(argc, argv);

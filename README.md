@@ -9,7 +9,7 @@ A single binary `spl` is the server *and* the peer.
 
 ## Install
 
-Build from source and drop `spl` into `~/.local/bin` — no root:
+Drop `spl` into `~/.local/bin` — no root:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/m4teuk/splice/main/install.sh | bash
@@ -23,11 +23,20 @@ bash splice/install.sh
 rm -rf splice          # the binary now lives in ~/.local/bin
 ```
 
-Rust is bootstrapped automatically; the C++ toolchain, CMake, Ninja, pkg-config and
-OpenSSL 3 headers must already be present — the script prints the one
-`apt`/`brew`/`dnf` command to install them if not (it never runs `sudo` itself).
-Ensure `~/.local/bin` is on your `PATH`. Then `spl pair` works against the default
-relay. To develop, or to run a server, build manually (below).
+By default the script **downloads a prebuilt `spl`** for your platform (Linux/macOS,
+x86_64/arm64), verifies its checksum, and installs it — no toolchain needed. The
+prebuilt binaries link OpenSSL statically, so they only need the system C runtime.
+
+If no prebuilt binary fits your system (or it won't run there), the script
+**falls back to building from source**: Rust is bootstrapped automatically, while a
+C++ toolchain, CMake, Ninja, pkg-config and OpenSSL 3 headers must already be present
+— it prints the one `apt`/`brew`/`dnf` command to install them if not (it never runs
+`sudo` itself).
+
+Overrides: `SPL_FROM_SOURCE=1` always builds from source; `SPL_VERSION=<tag>` pulls a
+specific release instead of the rolling `nightly` build; `SPL_PREFIX=<dir>` changes the
+install location. Ensure `~/.local/bin` is on your `PATH`; then `spl pair` works against
+the default relay. To develop, or to run a server, build manually (below).
 
 ## Build
 

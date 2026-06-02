@@ -9,10 +9,21 @@ The example domain below is `splice.kussowski.dev`; substitute your own.
 
 ## 1. Put the binary on the host
 
-The repo is only needed to *build*; only the binary needs to live on the server.
-Either build on the box and keep the source in root's home (not the service
-user's), or build elsewhere and copy the single binary — it only needs a matching
-`libssl` at runtime (same OpenSSL major version).
+The quickest path is a prebuilt binary — it links OpenSSL statically, so it needs
+no `libssl` on the host, just the system C runtime:
+
+```sh
+curl -fsSL -o spl \
+  https://github.com/m4teuk/splice/releases/download/nightly/spl-linux-x86_64
+# (or spl-linux-aarch64); verify against the matching .sha256, then:
+sudo install -m 0755 spl /usr/local/bin/spl
+```
+
+Otherwise build it. The repo is only needed to *build*; only the binary needs to
+live on the server. Either build on the box and keep the source in root's home (not
+the service user's), or build elsewhere and copy the single binary — a from-source
+build needs a matching `libssl` at runtime (same OpenSSL major version) unless you
+link it statically as the release binaries do.
 
 ```sh
 # on the build host (needs: cmake ninja-build libssl-dev pkg-config rust)
