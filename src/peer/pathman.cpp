@@ -28,7 +28,8 @@ constexpr Millis kTickMs = 250;
 constexpr Millis kRegisterMs = 4000;
 constexpr Millis kWhereamiMs = 1000;
 constexpr Millis kCallmeMs = 1000;
-constexpr Millis kPingMs = 700;
+constexpr Millis kPingProbeMs = 300;       // probe rate while no direct path is up (recover fast)
+constexpr Millis kPingKeepaliveMs = 1000;  // probe rate once a direct path is established
 constexpr Millis kDirectDeadMs = 3000;
 
 constexpr size_t kMaxAdvertise = 8;  // LAN candidates we put in one CALLME
@@ -388,7 +389,10 @@ void PathManager::run(std::atomic<bool>& stop) {
                 Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
                 send_payload(Path::Relay, nullptr, as_span(inner));
             }
-            if (!force_relay_ && !cands_.empty() && now - t_ping_ >= kPingMs) {
+            // Probe faster while no direct path is up (to get off the rate-limited
+            // relay sooner), slower once one is established (keepalive + RTT refresh).
+            const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
+            if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
                 t_ping_ = now;
                 // Probe every candidate so each keeps a fresh RTT and choose_direct can
                 // pick (and re-pick) the fastest reachable one.
