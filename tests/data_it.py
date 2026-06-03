@@ -139,19 +139,18 @@ def main():
             f"did not fall back to relay after direct died:\n{fb.stdout}"
         print("  fallback OK: direct died, returned to relay")
 
-        # --- scenario 3: same-NAT peers detect each other and prefer a LAN path ---
-        # Both peers reach the server from 127.0.0.1, so each observes the same
-        # external IP and concludes they sit behind one NAT. Where the host has a
-        # real (non-loopback) interface, they additionally find a working LAN path
-        # and prefer it over hairpinning through the external address.
+        # --- scenario 3: peers adopt each other's advertised interface addresses as
+        # direct candidates and go direct. Each peer advertises its interface
+        # addresses over the relay; the other adopts them all (no same-NAT gate) and
+        # probes them, so where the host has a real (non-loopback) interface a LAN
+        # candidate is adopted and reachable here (same machine).
         lan = run_datatest(port, ld, fd, ["-v", "--run-seconds", "8"], [], 30)
-        assert "same-NAT peer" in lan.stdout, f"shared NAT not detected:\n{lan.stdout}"
         assert "over DIRECT" in lan.stdout, f"never went direct:\n{lan.stdout}"
         if primary_lan_ip():
-            assert "(LAN)" in lan.stdout, f"never preferred a LAN direct path:\n{lan.stdout}"
-            print("  LAN-direct OK: same-NAT detected, direct path over the LAN")
+            assert "(LAN)" in lan.stdout, f"never adopted a LAN candidate:\n{lan.stdout}"
+            print("  LAN-direct OK: adopted LAN candidate(s), went direct")
         else:
-            print("  LAN-direct OK: same-NAT detected (no LAN interface to probe)")
+            print("  LAN-direct OK: went direct (no LAN interface to probe)")
         print("DATAPATH E2E PASSED")
     finally:
         stop(leader)

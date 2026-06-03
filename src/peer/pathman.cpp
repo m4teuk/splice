@@ -165,16 +165,17 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         if (via != Path::Relay) return;  // candidates are advertised over the relay only
         Endpoint ext{r.array<16>(), r.u16()};
         if (!r.ok()) return;
-        std::vector<Endpoint> locals;
+        add_cand(ext, /*lan=*/false);
+        // Adopt every interface address the peer advertised, regardless of whether we
+        // share a NAT: a same-LAN address is reachable directly, an overlay address
+        // (e.g. Tailscale) is reachable if we share that overlay, and an unreachable
+        // one simply never goes alive. RTT selection then picks the best reachable
+        // path — no address range is special-cased.
         const uint8_t n = r.u8();  // absent in a truncated/old CALLME -> !r.ok() -> no locals
         for (uint8_t i = 0; r.ok() && i < n; ++i) {
             Endpoint le{r.array<16>(), r.u16()};
-            if (r.ok()) locals.push_back(le);
+            if (r.ok()) add_cand(le, /*lan=*/true);
         }
-        peer_ext_ = ext;
-        peer_locals_ = std::move(locals);
-        add_cand(ext, /*lan=*/false);
-        maybe_adopt_lan();
     } else if (dt == DISCO_PING) {
         const uint64_t tx = r.u64();
         if (!r.ok() || !from) return;
@@ -217,9 +218,7 @@ void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
                 Endpoint e{rep->ip, rep->port};
                 if (!external_ || *external_ != e) {
                     external_ = e;
-                    lan_adopted_ = false;  // re-evaluate same-NAT against the new external
                     if (cfg_.verbose) spl::logf("[path] external address %s", e.to_string().c_str());
-                    maybe_adopt_lan();
                 }
             }
         } else if (t == proto::UdpType::kRelay) {
@@ -302,19 +301,6 @@ void PathManager::choose_direct(Millis now) {
     }
 }
 
-// If the peer reports the same external IP as ours, we share a NAT and our
-// private LAN addresses are mutually routable — adopt the peer's as candidates.
-void PathManager::maybe_adopt_lan() {
-    if (lan_adopted_ || !external_ || !peer_ext_) return;
-    // Compare IP only: one NAT typically maps each peer to a different public port.
-    if (external_->ip != peer_ext_->ip) return;
-    lan_adopted_ = true;
-    if (cfg_.verbose)
-        spl::logf("[path] same-NAT peer (%s); trying %zu LAN candidate(s)",
-                  external_->to_string().c_str(), peer_locals_.size());
-    for (const auto& e : peer_locals_) add_cand(e, /*lan=*/true);
-}
-
 void PathManager::run(std::atomic<bool>& stop) {
     net::set_nonblocking(udp_.get(), true);
     send_register();
@@ -372,19 +358,10 @@ void PathManager::run(std::atomic<bool>& stop) {
             }
             if (!force_relay_ && !cands_.empty() && now - t_ping_ >= kPingMs) {
                 t_ping_ = now;
-                // Once a LAN path is alive, probe only LAN candidates so we converge
-                // on the LAN address and let the NAT'd external path go stale.
-                bool lan_alive = false;
-                for (const auto& c : cands_)
-                    if (c.lan && c.last_rx && now - c.last_rx < kDirectDeadMs) {
-                        lan_alive = true;
-                        break;
-                    }
+                // Probe every candidate so each keeps a fresh RTT and choose_direct can
+                // pick (and re-pick) the fastest reachable one.
                 Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));
-                for (const auto& c : cands_) {
-                    if (lan_alive && !c.lan) continue;
-                    send_payload(Path::Direct, &c.ep, as_span(inner));
-                }
+                for (const auto& c : cands_) send_payload(Path::Direct, &c.ep, as_span(inner));
             }
         }
 

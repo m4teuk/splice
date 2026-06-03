@@ -80,9 +80,9 @@ WireGuard, `0x01` = disco (path control).
 ```
 start on RELAY  (works once both peers register)
   -> whereami learns our external address
-  -> CALLME (over relay) tells the peer our external + LAN addresses
-  -> disco PING/PONG probes every candidate directly
-  -> UPGRADE to DIRECT once a round-trip is confirmed (a LAN path is preferred)
+  -> CALLME (over relay) tells the peer our external + interface addresses
+  -> disco PING/PONG probes every candidate directly, measuring per-candidate RTT
+  -> UPGRADE to DIRECT once a round-trip is confirmed (lowest-RTT candidate wins)
   -> FALL BACK to RELAY if the direct path goes quiet (no packets for 3s)
 ```
 
@@ -102,17 +102,21 @@ Peer↔peer datagrams (relayed or direct) are `[channel:1][body]`: channel `0x00
 is WireGuard, `0x01` is disco. Disco messages:
 
 - `CALLME` `0x01 ‖ ip[16] ‖ port[2] ‖ count[1] ‖ count×(ip[16] ‖ port[2])` —
-  "reach me here": our external address (the whereami result) followed by our LAN
-  addresses, sent over the relay until a direct path is confirmed.
+  "reach me here": our external address (the whereami result) followed by our
+  interface addresses, sent over the relay until a direct path is confirmed.
 - `PING` `0x02 ‖ txid[8]` — sent at each candidate address to punch.
-- `PONG` `0x03 ‖ txid[8]` — reply to a PING; receiving one confirms a working
-  round-trip and upgrades the active path to DIRECT.
+- `PONG` `0x03 ‖ txid[8]` — reply to a PING; one that echoes our latest token, from
+  a candidate we are probing, marks that candidate alive and samples its RTT.
 
-When both peers report the same external IP they sit behind one NAT, so each
-adopts the other's LAN addresses as extra candidates and prefers a confirmed LAN
-path — two machines on one network talk over the LAN instead of hairpinning
-through the router or relaying. A LAN address that never answers is just ignored:
-every path is WireGuard-encrypted, so a failed probe costs nothing.
+Each peer adopts **all** of the other's advertised interface addresses as direct
+candidates — no same-NAT gate and no address range is special-cased. A same-LAN
+address is reachable directly; an overlay address (e.g. Tailscale) is reachable if
+the peers share that overlay; an unreachable one (a private LAN address seen across
+different networks) simply never answers and is ignored. `choose_direct` then picks
+the **lowest-RTT alive** candidate (with hysteresis to avoid flapping), so the
+fastest reachable path wins on its own merits — the real LAN over an overlay hop,
+an overlay over the relay — without us trusting or blacklisting any address. Every
+path is WireGuard-encrypted, so a failed or stray probe costs nothing.
 
 The path manager keeps the relay mapping and (once known) the direct path warm
 with keepalives, and reverts to the relay if no direct packet arrives for ~3 s;

@@ -98,8 +98,7 @@ class PathManager {
     DirectCand* find_cand(const Endpoint& ep);
     void add_cand(const Endpoint& ep, bool lan);        // register a probe target (deduped)
     void touch_cand(const Endpoint& from, Millis now);  // record inbound liveness
-    void choose_direct(Millis now);                     // pick the active path (LAN preferred)
-    void maybe_adopt_lan();  // adopt the peer's LAN candidates when we share a NAT
+    void choose_direct(Millis now);  // pick the active path (lowest-RTT alive candidate)
 
     net::Fd udp_;
     PathConfig cfg_;
@@ -113,10 +112,7 @@ class PathManager {
     bool direct_confirmed_ = false;  // derived: some candidate is currently alive
     bool force_relay_ = false;
 
-    std::vector<Endpoint> local_eps_;    // our own LAN candidates (advertised in CALLME)
-    std::optional<Endpoint> peer_ext_;   // peer's external, as last advertised over CALLME
-    std::vector<Endpoint> peer_locals_;  // peer's LAN candidates, as last advertised
-    bool lan_adopted_ = false;           // already folded peer_locals_ into cands_
+    std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 
     int extra_fd_ = -1;
     std::function<void()> on_extra_readable_;
