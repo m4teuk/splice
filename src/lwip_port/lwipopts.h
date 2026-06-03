@@ -14,7 +14,7 @@
 #define MEM_LIBC_MALLOC 1
 #define MEMP_MEM_MALLOC 1
 #define MEM_ALIGNMENT 8  // 64-bit host
-#define MEM_SIZE (256 * 1024)
+#define MEM_SIZE (8 * 1024 * 1024)  // generous; with MEM_LIBC_MALLOC this is a soft ceiling
 
 // IPv6 only (ULA addressing inside the tunnel).
 #define LWIP_IPV4 0
@@ -45,8 +45,19 @@
 
 // Inner MTU leaves headroom for WireGuard + the outer UDP/IP encapsulation.
 #define TCP_MSS 1200
-#define TCP_WND (8 * TCP_MSS)
-#define TCP_SND_BUF (8 * TCP_MSS)
+
+// Throughput is bounded by window / RTT, and the effective RTT here is the
+// per-round-trip cost of the userspace path (scheduling + WireGuard + lwIP on both
+// ends): ~1 ms on loopback, several ms over a LAN. An 8*MSS (9.6 KB) window
+// therefore throttled bulk transfers to ~1-9 MB/s. A large, window-scaled receive
+// window lets a transfer run near link speed.
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 3
+#define TCP_WND (256 * 1024)
+#define TCP_SND_BUF (256 * 1024)
+// The send low-water mark stays a u16, so pin it small instead of letting it be
+// derived from the (now large) send buffer (which would overflow it).
+#define TCP_SNDLOWAT (4 * TCP_MSS)
 
 // `spl send` retries the connect until the peer comes online, so let an individual
 // attempt give up quickly (default is 6) — the retry loop keeps trying.
