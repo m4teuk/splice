@@ -76,8 +76,9 @@ class PathManager {
     // A direct-path candidate we probe with disco PING/PONG.
     struct DirectCand {
         Endpoint ep;
-        bool lan = false;    // a peer LAN address (preferred over the NAT'd external path)
+        bool lan = false;    // a peer LAN address (vs the NAT'd external path)
         Millis last_rx = 0;  // last inbound datagram from this address (0 = never)
+        Millis srtt = 0;     // smoothed PONG round-trip (ms); 0 = not yet measured
     };
 
     void process(const Endpoint& src, ByteSpan raw, Millis now);

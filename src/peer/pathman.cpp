@@ -186,7 +186,12 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         // comes from a candidate we are actually probing — a sprayed packet from an
         // unknown source can neither add itself nor keep the direct path alive.
         if (!r.ok() || tx != ping_txid_ || !from) return;
-        if (DirectCand* c = find_cand(*from)) c->last_rx = now;
+        if (DirectCand* c = find_cand(*from)) {
+            c->last_rx = now;
+            Millis rtt = now - t_ping_;  // this token went out at t_ping_
+            if (rtt < 1) rtt = 1;
+            c->srtt = c->srtt ? (c->srtt * 3 + rtt) / 4 : rtt;  // EWMA toward the latest sample
+        }
     }
 }
 
@@ -262,21 +267,30 @@ void PathManager::touch_cand(const Endpoint& from, Millis now) {
     cands_.push_back({from, false, now});  // learned from traffic (e.g. a NAT rebind)
 }
 
-// Pick the active direct path: the best *alive* candidate, preferring a LAN
-// address over the NAT'd external one. Sets chosen_/direct_confirmed_.
+// Pick the active direct path: the lowest-RTT *alive* candidate, with hysteresis so
+// we converge on the fastest path instead of flapping. No address range is
+// special-cased — RTT decides, so a real LAN address naturally beats a Tailscale or
+// other overlay hop (which has a higher round-trip), without a blacklist.
 void PathManager::choose_direct(Millis now) {
+    auto alive = [&](const DirectCand& c) { return c.last_rx && now - c.last_rx < kDirectDeadMs; };
+    auto score = [](const DirectCand& c) -> Millis { return c.srtt ? c.srtt : 1'000'000; };
+
     const DirectCand* best = nullptr;
-    for (const auto& c : cands_) {
-        if (c.last_rx == 0 || now - c.last_rx >= kDirectDeadMs) continue;  // not alive
-        if (!best || (c.lan && !best->lan)) best = &c;
-    }
+    for (const auto& c : cands_)
+        if (alive(c) && (!best || score(c) < score(*best))) best = &c;
+
+    // Stick with the current path while it stays alive and is within ~25% of the
+    // best candidate's RTT, so comparable paths don't cause churn.
+    if (chosen_)
+        if (DirectCand* cur = find_cand(*chosen_))
+            if (alive(*cur) && best && score(*cur) <= score(*best) + score(*best) / 4) best = cur;
+
     const bool was = direct_confirmed_;
     if (best) {
-        if (!chosen_ || *chosen_ != best->ep || chosen_lan_ != best->lan) {
+        if (!chosen_ || *chosen_ != best->ep)
             if (cfg_.verbose)
-                spl::logf("[path] direct via %s%s", best->ep.to_string().c_str(),
-                          best->lan ? " (LAN)" : "");
-        }
+                spl::logf("[path] direct via %s%s (~%lldms)", best->ep.to_string().c_str(),
+                          best->lan ? " LAN" : "", static_cast<long long>(best->srtt));
         chosen_ = best->ep;
         chosen_lan_ = best->lan;
         direct_confirmed_ = true;
