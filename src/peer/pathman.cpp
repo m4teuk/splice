@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "common/bytes.h"
@@ -97,8 +98,12 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
     // so a peer on the same network reaches us at <interface ip>:<our local port>.
     const uint16_t lp = net::local_port(udp_.get());
     local_eps_ = net::local_interface_endpoints(lp);
-    if (cfg_.verbose && !local_eps_.empty())
-        spl::logf("[path] %zu local LAN candidate(s) on port %u", local_eps_.size(), lp);
+    if (cfg_.verbose && !local_eps_.empty()) {
+        std::string s;
+        for (const auto& e : local_eps_) s += " " + e.to_string();
+        spl::logf("[path] advertising %zu local iface candidate(s) on port %u:%s",
+                  local_eps_.size(), lp, s.c_str());
+    }
 }
 
 void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
@@ -172,10 +177,16 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         // one simply never goes alive. RTT selection then picks the best reachable
         // path — no address range is special-cased.
         const uint8_t n = r.u8();  // absent in a truncated/old CALLME -> !r.ok() -> no locals
+        std::string adv;
         for (uint8_t i = 0; r.ok() && i < n; ++i) {
             Endpoint le{r.array<16>(), r.u16()};
-            if (r.ok()) add_cand(le, /*lan=*/true);
+            if (!r.ok()) break;
+            add_cand(le, /*lan=*/true);
+            adv += " " + le.to_string();
         }
+        if (cfg_.verbose)
+            spl::logf("[disco] <- CALLME: peer external %s, %u iface addr(s):%s",
+                      ext.to_string().c_str(), n, adv.empty() ? " (none)" : adv.c_str());
     } else if (dt == DISCO_PING) {
         const uint64_t tx = r.u64();
         if (!r.ok() || !from) return;
@@ -188,10 +199,14 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         // unknown source can neither add itself nor keep the direct path alive.
         if (!r.ok() || tx != ping_txid_ || !from) return;
         if (DirectCand* c = find_cand(*from)) {
+            const bool was_alive = c->last_rx && now - c->last_rx < kDirectDeadMs;
             c->last_rx = now;
             Millis rtt = now - t_ping_;  // this token went out at t_ping_
             if (rtt < 1) rtt = 1;
             c->srtt = c->srtt ? (c->srtt * 3 + rtt) / 4 : rtt;  // EWMA toward the latest sample
+            if (cfg_.verbose && !was_alive)
+                spl::logf("[disco] <- PONG from %s: candidate now ALIVE (rtt %lldms)",
+                          from->to_string().c_str(), static_cast<long long>(rtt));
         }
     }
 }
@@ -301,6 +316,23 @@ void PathManager::choose_direct(Millis now) {
     }
 }
 
+// Verbose: one glance at the whole path state — every candidate, whether it has
+// answered, its RTT, and which one we are using.
+void PathManager::dump_paths(Millis now) {
+    spl::logf("[path] active=%s | our external=%s | %zu candidate(s):", path_name(tx_path_),
+              external_ ? external_->to_string().c_str() : "(unknown)", cands_.size());
+    for (const auto& c : cands_) {
+        const bool live = c.last_rx && now - c.last_rx < kDirectDeadMs;
+        const bool using_it = chosen_ && *chosen_ == c.ep;
+        const std::string rtt = c.srtt ? std::to_string(static_cast<long long>(c.srtt)) + "ms" : "?";
+        const std::string seen =
+            c.last_rx ? std::to_string(now - c.last_rx) + "ms ago" : "no reply yet";
+        spl::logf("[path]   %s %s [%s] %s rtt=%s, last reply %s", using_it ? "USE->" : "     ",
+                  c.ep.to_string().c_str(), c.lan ? "iface" : "ext ", live ? "ALIVE" : "dead ",
+                  rtt.c_str(), seen.c_str());
+    }
+}
+
 void PathManager::run(std::atomic<bool>& stop) {
     net::set_nonblocking(udp_.get(), true);
     send_register();
@@ -372,6 +404,7 @@ void PathManager::run(std::atomic<bool>& stop) {
                       path_name(tx_path_), human_bytes(tx_direct_).c_str(),
                       human_bytes(tx_relay_).c_str(), human_bytes(rx_direct_).c_str(),
                       human_bytes(rx_relay_).c_str());
+            dump_paths(now);
         }
         if (on_tick) on_tick(now);
     }

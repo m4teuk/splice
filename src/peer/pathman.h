@@ -99,6 +99,7 @@ class PathManager {
     void add_cand(const Endpoint& ep, bool lan);        // register a probe target (deduped)
     void touch_cand(const Endpoint& from, Millis now);  // record inbound liveness
     void choose_direct(Millis now);  // pick the active path (lowest-RTT alive candidate)
+    void dump_paths(Millis now);     // verbose: log the candidate table + active path
 
     net::Fd udp_;
     PathConfig cfg_;
