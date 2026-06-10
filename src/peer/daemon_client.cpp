@@ -81,7 +81,10 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
     }
     if (pid == 0) {  // child: become the daemon (single-threaded; fork is safe)
         ::setsid();
+        // One daemon lifetime per log file so it can't grow forever. Both std
+        // streams open in append mode (atomic at the fd level) on the fresh file.
         const std::string log = runtime_dir() + "/daemon.log";
+        ::unlink(log.c_str());
         if (!std::freopen("/dev/null", "r", stdin)) {}
         if (!std::freopen(log.c_str(), "a", stdout)) {}
         if (!std::freopen(log.c_str(), "a", stderr)) {}

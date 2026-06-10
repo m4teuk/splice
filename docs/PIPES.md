@@ -60,6 +60,12 @@ STATUS                                       -> the state of everything
 RESET                                        -> drop every pipe (only `diagnostic` remains)
 ```
 
+(Plus three housekeeping verbs: `PING` -> `OK` (aliveness, used by auto-start),
+`STOP` (shut the daemon down), and `FORCE_RELAY <peer> <0|1>` — a debug/test
+hook that pins a session to the relay to simulate losing the direct path. The
+env hooks `SPL_FORCE_RELAY=1` and `SPL_LOSS=<frac>` — drop that fraction of
+egress UDP packets — apply at daemon start.)
+
 **Registrations are durable.** A daemon-owned registration is a fact, recorded
 like pairings are: one file per pipe under `<config>/pipes/<peer>/<name>`. The
 daemon resolves incoming names against these files on demand, so a restarted

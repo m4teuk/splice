@@ -173,9 +173,12 @@ Netstack::Netstack() {
 }
 
 Netstack::~Netstack() {
-    conns_.clear();  // aborts surviving pcbs while our netif still exists
     if (listen_pcb_) tcp_close(listen_pcb_);
+    conns_.clear();  // aborts surviving pcbs; their RSTs queue on the loopback
     if (netif_) {
+        // Drain the loopback queue: netif_remove does not free pending loop
+        // packets, so the RSTs queued just above would leak their pbufs.
+        for (int i = 0; i < 8 && netif_->loop_first; ++i) netif_poll(netif_);
         netif_remove(netif_);  // lwIP keeps netifs in a global list
         delete netif_;
     }
