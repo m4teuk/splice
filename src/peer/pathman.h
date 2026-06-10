@@ -44,7 +44,6 @@ struct PathConfig {
     proto::WgKey own_priv;
     proto::WgKey peer_pub;
     Endpoint server;       // resolved rendezvous/relay server address
-    Millis disco_delay_ms = 0;  // delay hole-punching (makes the relay phase observable)
 };
 
 // Read-only snapshot of the path state, for status displays. The path manager

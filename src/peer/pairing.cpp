@@ -23,7 +23,7 @@
 #include "native/native.h"
 #include "net/socket.h"
 #include "net/tls.h"
-#include "peer/runtime.h"
+#include "peer/daemon.h"
 #include "peer/store.h"
 #include "proto/frame.h"
 #include "proto/pairing.h"
@@ -349,7 +349,7 @@ void usage() {
 }  // namespace
 
 int pair_main(int argc, char** argv) {
-    PeerOpts dopts = default_peer_opts();
+    DaemonOpts dopts = default_daemon_opts();
     std::string code_arg, server = dopts.server, name;
     uint16_t port = dopts.port;
     bool verbose = false, insecure = false;

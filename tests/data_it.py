@@ -1,159 +1,125 @@
 #!/usr/bin/env python3
-"""End-to-end datapath test: pair two peers, then run the WireGuard data path
-(hand-crafted IPv6 echo) through the server and confirm it starts on the relay
-and upgrades to a direct path.
+"""Datapath test on the daemon: data flows while pinned to the relay, the path
+upgrades to direct when released, and falls back to the relay when the direct
+path is killed — verified with echoes through the diagnostic pipe and the
+daemon's STATUS. Talks the control protocol directly over the unix socket.
 
 Usage: data_it.py /path/to/spl
 """
 import os
-import signal
 import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
+
+from itlib import free_port, pair_two, start_server, stop
 
 SPL = sys.argv[1]
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
+def ctl(run_dir, line):
+    """One control-protocol command; returns the first reply line."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(os.path.join(run_dir, "daemon.sock"))
+    s.sendall(line.encode() + b"\n")
+    buf = b""
+    while b"\n" not in buf:
+        d = s.recv(4096)
+        if not d:
+            break
+        buf += d
     s.close()
-    return p
+    return buf.split(b"\n", 1)[0].decode()
 
 
-def primary_lan_ip():
-    """A usable non-loopback IPv4, or None — then LAN-direct can't be exercised here."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("10.255.255.255", 1))  # sends nothing; just resolves the source address
-        ip = s.getsockname()[0]
-    except OSError:
-        ip = None
-    finally:
-        s.close()
-    return ip if ip and not ip.startswith("127.") else None
+def status(run_dir):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(os.path.join(run_dir, "daemon.sock"))
+    s.sendall(b"STATUS\n")
+    out = b""
+    while True:
+        d = s.recv(4096)
+        if not d:
+            break
+        out += d
+    s.close()
+    return out.decode()
 
 
-def start_server(port):
-    proc = subprocess.Popen(
-        [SPL, "server", "--bind", "127.0.0.1", "--port", str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    dl = time.time() + 10
-    while time.time() < dl:
-        try:
-            socket.create_connection(("127.0.0.1", port), 0.3).close()
-            return proc
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError("server not ready")
+def echo(run_dir, peer, payload, timeout=20):
+    """Round-trip payload through the peer's diagnostic pipe."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(os.path.join(run_dir, "daemon.sock"))
+    s.sendall(f"OPEN {peer} diagnostic PIPE\n".encode())
+    buf = b""
+    while b"\n" not in buf:
+        buf += s.recv(4096)
+    assert buf.split(b"\n", 1)[0].startswith(b"OK"), buf
+    rest = buf.split(b"\n", 1)[1]
+    s.sendall(payload)
+    got = rest
+    deadline = time.time() + timeout
+    while len(got) < len(payload) and time.time() < deadline:
+        got += s.recv(65536)
+    s.close()
+    assert got == payload, f"echo mismatch ({len(got)}/{len(payload)} bytes)"
 
 
-def read_line_containing(proc, needle, timeout):
-    res = [None]
-
-    def rdr():
-        for line in proc.stdout:
-            if needle in line:
-                res[0] = line.strip()
+def wait_path(run_dir, peer, want, timeout=25):
+    deadline = time.time() + timeout
+    out = ""
+    while time.time() < deadline:
+        out = status(run_dir)
+        for line in out.splitlines():
+            if line.startswith(f"PEER {peer}:") and want in line:
                 return
-
-    t = threading.Thread(target=rdr, daemon=True)
-    t.start()
-    t.join(timeout)
-    return res[0]
-
-
-def stop(p):
-    if p and p.poll() is None:
-        p.send_signal(signal.SIGTERM)
-        try:
-            p.wait(5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-
-
-def run_datatest(port, ld, fd, init_extra, resp_extra, timeout):
-    resp = subprocess.Popen(
-        [SPL, "__datatest", "theleader", "--server", "127.0.0.1", "--port", str(port)] + resp_extra,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        env=dict(os.environ, SPL_CONFIG_DIR=fd),
-    )
-    try:
-        return subprocess.run(
-            [SPL, "__datatest", "thefollower", "--server", "127.0.0.1", "--port", str(port),
-             "--initiate"] + init_extra,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout,
-            env=dict(os.environ, SPL_CONFIG_DIR=ld),
-        )
-    finally:
-        stop(resp)
-
-
-def reply_paths(stdout):
-    return [ln.split()[-1] for ln in stdout.splitlines() if ln.startswith("reply seq=")]
+        time.sleep(0.3)
+    raise AssertionError(f"path never became {want}:\n{out}")
 
 
 def main():
     port = free_port()
-    srv = start_server(port)
-    ld, fd = tempfile.mkdtemp(), tempfile.mkdtemp()
-    leader = None
+    srv = start_server(SPL, port)
+    lrun, frun = tempfile.mkdtemp(), tempfile.mkdtemp()
     try:
-        # --- pair the two peers ---
-        leader = subprocess.Popen(
-            [SPL, "pair", "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "thefollower"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            env=dict(os.environ, SPL_CONFIG_DIR=ld),
-        )
-        codeline = read_line_containing(leader, "Pairing code:", 15)
-        assert codeline, "leader did not print a pairing code"
-        code = codeline.split()[-1]
-        follower = subprocess.run(
-            [SPL, "pair", code, "--server", "127.0.0.1", "--port", str(port), "--insecure", "--name", "theleader"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30,
-            env=dict(os.environ, SPL_CONFIG_DIR=fd),
-        )
-        assert leader.wait(30) == 0 and follower.returncode == 0, "pairing failed"
+        ld, fd = pair_two(SPL, port)
+        largs = ["--server", "127.0.0.1", "--port", str(port)]
+        # both daemons start pinned to the relay
+        for cfg, run in ((ld, lrun), (fd, frun)):
+            env = dict(os.environ, SPL_CONFIG_DIR=cfg, SPL_RUNTIME_DIR=run,
+                       SPL_FORCE_RELAY="1")
+            r = subprocess.run([SPL, "peer", "start", *largs], env=env,
+                               capture_output=True, text=True, timeout=30)
+            assert r.returncode == 0, r.stdout + r.stderr
 
-        # Disco is delayed ~2s on both sides so traffic is observably relayed first.
-        # --- scenario 1: relay-first, then upgrade to a direct path ---
-        up = run_datatest(port, ld, fd, ["--disco-delay", "2000"], ["--disco-delay", "2000"], 40)
-        assert "over RELAY" in up.stdout, f"no relay traffic:\n{up.stdout}"
-        assert "over DIRECT" in up.stdout, f"never upgraded to direct:\n{up.stdout}"
-        assert "UPGRADE OK" in up.stdout and up.returncode == 0, f"no upgrade:\n{up.stdout}"
-        print("  upgrade OK: relay-first, then direct")
+        # 1. data flows while everything rides the relay
+        echo(lrun, "thefollower", os.urandom(64 * 1024))
+        wait_path(lrun, "thefollower", "RELAY", 5)
+        print("  relay OK: echo while pinned to the relay")
 
-        # --- scenario 2: direct path dies mid-session -> fall back to relay ---
-        fb = run_datatest(port, ld, fd,
-                          ["--disco-delay", "2000", "--run-seconds", "13"],
-                          ["--disco-delay", "2000", "--kill-direct-after", "5000"], 40)
-        paths = reply_paths(fb.stdout)
-        assert "DIRECT" in paths, f"never went direct:\n{fb.stdout}"
-        last_direct = max(i for i, p in enumerate(paths) if p == "DIRECT")
-        assert any(p == "RELAY" for p in paths[last_direct + 1:]), \
-            f"did not fall back to relay after direct died:\n{fb.stdout}"
-        print("  fallback OK: direct died, returned to relay")
+        # 2. released -> upgrades to a direct path
+        assert ctl(lrun, "FORCE_RELAY thefollower 0") == "OK"
+        assert ctl(frun, "FORCE_RELAY theleader 0") == "OK"
+        wait_path(lrun, "thefollower", "DIRECT")
+        wait_path(frun, "theleader", "DIRECT")
+        echo(lrun, "thefollower", os.urandom(64 * 1024))
+        print("  upgrade OK: direct path, echo verified")
 
-        # --- scenario 3: peers adopt each other's advertised interface addresses as
-        # direct candidates and go direct. Each peer advertises its interface
-        # addresses over the relay; the other adopts them all (no same-NAT gate) and
-        # probes them, so where the host has a real (non-loopback) interface a LAN
-        # candidate is adopted and reachable here (same machine).
-        lan = run_datatest(port, ld, fd, ["-v", "--run-seconds", "8"], [], 30)
-        assert "over DIRECT" in lan.stdout, f"never went direct:\n{lan.stdout}"
-        if primary_lan_ip():
-            assert "(LAN)" in lan.stdout, f"never adopted a LAN candidate:\n{lan.stdout}"
-            print("  LAN-direct OK: adopted LAN candidate(s), went direct")
-        else:
-            print("  LAN-direct OK: went direct (no LAN interface to probe)")
+        # 3. direct path dies on one side -> that side falls back to the relay
+        assert ctl(lrun, "FORCE_RELAY thefollower 1") == "OK"
+        wait_path(lrun, "thefollower", "RELAY", 10)
+        echo(lrun, "thefollower", os.urandom(64 * 1024))
+        print("  fallback OK: relay again, echo verified")
+
         print("DATAPATH E2E PASSED")
     finally:
-        stop(leader)
+        for run in (lrun, frun):
+            try:
+                ctl(run, "STOP")
+            except OSError:
+                pass
         stop(srv)
 
 

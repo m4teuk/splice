@@ -126,25 +126,27 @@ you can compare them out of band; the prompt accepts `[v]erify` (paste the peer'
 key to check it) and `[c]opy` (copy your own key to the clipboard) alongside
 `[a]ccept`/`[d]ecline`.
 
-Then talk over the tunnel. Send a file (optionally renaming it for the receiver),
-chat interactively, or manage connections:
+Then talk over the tunnel. A per-user **daemon** keeps one warm connection per
+paired peer and splices named byte **pipes** over it (see
+[docs/PIPES.md](docs/PIPES.md)); the commands are thin clients of it and start
+it on demand:
 
 ```sh
-spl receive laptop                 # waits for incoming files (writes under cwd)
-spl send phone ./report.pdf docs/  # one or more files/dirs; report.pdf:newname renames
-spl chat laptop                    # bidirectional stdin<->stdout pipe
+spl serve laptop report.pdf        # host a file; the peer fetches it when it wants
+spl get phone report.pdf           # fetch (writes ./report.pdf; -o DIR/FILE, -f, -b)
+spl chat laptop                    # talk: a terminal on each end of a pipe
 
-spl peer ls                        # list paired connections
-spl peer rename laptop work        # rename
-spl peer remove work               # delete
+spl peer status                    # all peers: path (direct/relay), pipes, progress
+spl peer start | stop              # daemon lifecycle (auto-started otherwise)
+spl peer ls | rename | remove      # manage paired connections
+spl peer register | open | close   # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
 ```
 
-You can send several files and directories in one command; directories are sent
-recursively with their subdirectory structure. The receiver never silently
-overwrites: a name collision prompts `[o]verwrite / [s]kip / [r]ename / [c]ancel`,
-and incoming paths are confined to the current directory (`..` and absolute paths
-are stripped). Add `-v` to any command for verbose logging (the peer shows
-throughput by path — direct vs relay — and the server shows a live relay summary).
+Serving is durable: registrations survive daemon restarts (`spl peer reset`
+clears them), so you can `spl serve` on a server once and fetch whenever. The
+receiver never silently overwrites (`-f` to allow) and incoming names are
+reduced to a safe filename. `spl get` shows progress on a TTY; everything else
+shows its progress in `spl peer status`.
 
 ### Config file
 
@@ -163,7 +165,7 @@ global_burst = 200000
 # cert = /etc/spl/cert.pem
 # key  = /etc/spl/key.pem
 
-[peer]                   # relay for pair / chat / send / receive
+[peer]                   # relay for pair / chat / serve / get / the daemon
 addr = splice.kussowski.dev   # defaults to this public relay
 port = 443
 ```
@@ -179,8 +181,9 @@ ctest --test-dir build
 Unit tests cover the wire codecs, server logic (code allocator / relay table /
 rate limiter), crypto (HKDF/HMAC/AEAD/SPAKE2), the WireGuard FFI, and the lwIP
 stack. Integration tests boot a real server and drive the server protocols,
-pairing (including a tamper-abort), the data path (relay → direct → fallback), and
-the full nc pipe.
+pairing (including a tamper-abort), the daemon (pipes, persistence, reset), the
+data path (relay → direct → fallback), file serving (including a lossy path),
+and chat.
 
 ## Layout
 
@@ -190,7 +193,7 @@ src/proto/     wire codecs (pairing, relay, whereami)
 src/crypto/    HKDF/HMAC/AEAD (OpenSSL) + SPAKE2 wrapper
 src/net/       sockets + TLS
 src/server/    rendezvous + relay + entrypoint
-src/peer/      pairing, store, WireGuard, path manager, lwIP netstack, nc app
+src/peer/      pairing, store, WireGuard, path manager, lwIP netstack, daemon + pipes
 src/lwip_port/ lwIP NO_SYS port (lwipopts.h, arch, sys_now)
 third_party/   lwIP submodule
 tests/         gtest unit tests + Python integration tests
@@ -198,6 +201,7 @@ tests/         gtest unit tests + Python integration tests
 
 ## Status
 
-v1: pairing, the relay/direct WireGuard data path, and an nc-style byte pipe, all
-without root. Not yet: file-transfer framing, a TUN backend for system-wide use,
-and non-Linux path-manager backends. MIT licensed.
+v2: pairing, the relay/direct WireGuard data path, and a per-user daemon serving
+named byte pipes (files, chat, anything — [docs/PIPES.md](docs/PIPES.md)), all
+without root. Not yet: directory transfer (a future pipe-type pair), a TUN
+backend for system-wide use, and non-Linux path-manager backends. MIT licensed.

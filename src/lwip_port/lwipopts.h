@@ -60,8 +60,8 @@
 // derived from the (now large) send buffer (which would overflow it).
 #define TCP_SNDLOWAT (4 * TCP_MSS)
 
-// `spl send` retries the connect until the peer comes online, so let an individual
-// attempt give up quickly (default is 6) — the retry loop keeps trying.
+// The daemon re-dials an OPEN until the peer comes online, so let an individual
+// connect attempt give up quickly (default is 6) — the retry loop keeps trying.
 #define TCP_SYNMAXRTX 3
 
 #define LWIP_STATS 0

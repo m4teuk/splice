@@ -1,9 +1,8 @@
 # splice pipes — the daemon abstraction
 
-> **Status: target design.** This describes the daemon (`spl peer start`) and its
-> pipe model. The current code still runs one process per command
-> ([DESIGN.md](DESIGN.md) describes what is implemented today); this document is
-> the contract the refactor works toward.
+> This is the contract for the daemon (`spl peer start`) and its pipe model, and
+> it is what the code implements. [DESIGN.md](DESIGN.md) covers the layers
+> underneath (pairing, the relay, WireGuard, the path manager).
 
 ## The model
 

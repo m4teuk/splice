@@ -15,6 +15,7 @@
 #include <sstream>
 #include <vector>
 
+#include "common/config.h"
 #include "common/log.h"
 #include "common/time.h"
 #include "net/poller.h"
@@ -463,6 +464,15 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     }
     if (cmd == "STATUS") return reply_close("OK\n" + render_status(mono_ms()));
 
+    if (cmd == "FORCE_RELAY") {  // debug/test: pin a session to the relay (1) or release (0)
+        if (t.size() != 3) return reply_close("ERR usage: FORCE_RELAY <peer> <0|1>\n");
+        std::string err;
+        Session* s = session_for(t[1], &err);
+        if (!s) return reply_close("ERR " + err + "\n");
+        s->pm->set_force_relay(t[2] == "1");
+        return reply_close("OK\n");
+    }
+
     if (cmd == "RESET") {  // drop every pipe everywhere; only diagnostic remains
         for (auto& [name, s] : sessions_) {
             std::vector<uint64_t> ids;
@@ -709,6 +719,14 @@ std::string runtime_dir() {
 }
 
 std::string daemon_socket_path() { return runtime_dir() + "/daemon.sock"; }
+
+DaemonOpts default_daemon_opts() {
+    DaemonOpts o{"splice.kussowski.dev", 443};
+    Config c = load_config();
+    if (!c.peer.addr.empty()) o.server = c.peer.addr;
+    if (c.peer.port) o.port = c.peer.port;
+    return o;
+}
 
 std::string ctl_encode(const std::string& s) {
     static const char* hex = "0123456789ABCDEF";

@@ -14,13 +14,12 @@
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
-#include "peer/runtime.h"
 #include "peer/store.h"
 
 namespace spl::peer {
 
 int chat_main(int argc, char** argv) {
-    PeerOpts opts = default_peer_opts();
+    DaemonOpts opts = default_daemon_opts();
     std::string name;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -48,7 +47,7 @@ int chat_main(int argc, char** argv) {
         return 1;
     }
 
-    if (!ensure_daemon(DaemonOpts{opts.server, opts.port}, &err)) {
+    if (!ensure_daemon(opts, &err)) {
         spl::logf("spl chat: %s", err.c_str());
         return 1;
     }

@@ -4,18 +4,15 @@
 // argument handling and proves the Rust(native) <-> C++ FFI link; the role
 // implementations are filled in by later phases.
 
-#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <string_view>
 
 #include "native/native.h"
 #include "peer/chat.h"
-#include "peer/datatest.h"
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
 #include "peer/serve_get.h"
-#include "peer/xfer.h"
 #include "server/server_main.h"
 
 namespace {
@@ -33,8 +30,6 @@ int cmd_server(int argc, char** argv) {
 int cmd_pair(int argc, char** argv) {
     return spl::peer::pair_main(argc, argv);
 }
-int cmd_send(int argc, char** argv) { return spl::peer::send_main(argc, argv); }
-int cmd_receive(int argc, char** argv) { return spl::peer::receive_main(argc, argv); }
 int cmd_chat(int argc, char** argv) { return spl::peer::chat_main(argc, argv); }
 int cmd_peer(int argc, char** argv) { return spl::peer::peer_cmd_main(argc, argv); }
 
@@ -45,12 +40,10 @@ void print_usage() {
         "commands:\n"
         "  server                              run the rendezvous + relay server\n"
         "  pair [code]                         pair with another peer\n"
-        "  peer <sub>                          daemon + connections (see spl peer)\n"
+        "  peer <sub>                          daemon, pipes + connections (see spl peer)\n"
         "  serve <peer> [--name n] <path>      host a file for the peer to fetch\n"
         "  get <peer> <pipe> [-o p] [-b]       fetch a served file\n"
-        "  chat <name>                         bidirectional pipe over the tunnel\n"
-        "  send (s) <name> <path[:newname]>    send a file (legacy)\n"
-        "  receive (r) <name>                  receive a file (legacy)\n"
+        "  chat <name>                         talk to the peer (a PIPE pair)\n"
         "\n"
         "  --version   print version\n"
         "  --selftest  verify the native (Rust) FFI link\n"
@@ -92,9 +85,6 @@ int main(int argc, char** argv) {
     if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
     if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
-    if (cmd == "send" || cmd == "s") return cmd_send(argc - 1, argv + 1);
-    if (cmd == "receive" || cmd == "r") return cmd_receive(argc - 1, argv + 1);
-    if (cmd == "__datatest") return spl::peer::datatest_main(argc - 1, argv + 1);
 
     std::fprintf(stderr, "spl: unknown command '%.*s'\n",
                  static_cast<int>(cmd.size()), cmd.data());

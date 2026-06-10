@@ -1,9 +1,10 @@
 # splice — design & protocol
 
 `splice` is a peer-to-peer byte/file sharing tool built around an **untrusted
-relay server**. A single binary `spl` runs as the `server` or as a peer
-(`pair` / `send` / `receive`). Two peers pair once, then talk over a WireGuard
-tunnel whose packets travel either **directly** (NAT hole-punched) or **relayed**
+relay server**. A single binary `spl` runs as the `server`, as a per-user peer
+**daemon**, or as one of its thin clients (`pair` / `serve` / `get` / `chat` /
+`peer`). Two peers pair once, then their daemons talk over a WireGuard tunnel
+whose packets travel either **directly** (NAT hole-punched) or **relayed**
 through the server.
 
 ## Threat model
@@ -55,8 +56,10 @@ are HKDF-derived from K with the SPAKE2 transcript as salt. Each peer stores
 
 ### 2. Usage (UDP, the WireGuard data path)
 
-`spl receive <name>` listens; `spl send <name>` dials. Inner addressing is IPv6
-**ULA** (`fd00::/8`, a random /64 per pair): leader = `…::1`, follower = `…::2`.
+The daemon keeps one warm session per paired peer — path manager, WireGuard
+tunnel, and a userspace lwIP netif each. Inner addressing is IPv6 **ULA**
+(`fd00::/8`, a random /64 per pair): leader = `…::1`, follower = `…::2`; the
+disjoint /64s let one lwIP instance route between any number of peer netifs.
 
 ## Server data plane (UDP)
 
@@ -93,8 +96,9 @@ WireGuard's endpoint roaming means the session migrates between paths seamlessly
 Inner IP packets are produced/consumed by an in-process **lwIP** stack
 (`NO_SYS=1`, IPv6-only), so only *our* process uses the tunnel — no TUN device,
 no privileges. lwIP's `output_ip6` hands packets to the path manager (WireGuard
-encapsulate); decrypted inner packets are fed back via `ip6_input`. The app uses
-lwIP's raw TCP API; `spl send`/`receive` are an nc-style byte pipe over it.
+encapsulate); decrypted inner packets are fed back via `ip6_input`. lwIP is
+initialized once per process; each peer session owns one netif, and the daemon
+splices its pipes over lwIP's raw TCP API.
 
 ## Disco (path-control) wire format
 
@@ -124,32 +128,15 @@ WireGuard endpoint roaming migrates the session between paths transparently. For
 tests, `SPL_LOSS=<frac>` drops that fraction of egress UDP packets to exercise
 loss recovery.
 
-## Apps over the tunnel
+## Apps over the tunnel: the daemon and its pipes
 
-The app side speaks lwIP TCP to the peer's ULA address. Two apps ship today:
-
-- **`spl chat`** — a bidirectional stdin↔stdout pipe (tunnel TCP port 7771);
-  either side closing tears the whole connection down. Roles come from the stored
-  side: the leader listens, the follower dials.
-- **`spl send` / `receive`** — one-or-more-file transfer (tunnel TCP port 7772).
-  Control messages are `[u32 length][payload]` frames; between an `ACCEPT` and the
-  next frame the sender streams exactly `size` raw bytes:
-
-  ```
-  sender   → receiver   OFFER{relpath, size}      (one per file)
-  receiver → sender     ACCEPT | SKIP | CANCEL
-  sender   → receiver   <size bytes of data>      (only after ACCEPT)
-  ...                   (repeat per file)
-  sender   → receiver   END
-  receiver → sender     DONE                       (whole transfer written)
-  ```
-
-  Directories are expanded recursively into `dir/sub/file` relpaths. The receiver
-  reduces each relpath to a safe path **under the current directory** (`..`,
-  absolute, and empty components stripped; subdirectories created) and never
-  overwrites without a prompt (overwrite / skip / rename / cancel). Streaming is
-  flow-controlled by the lwIP send buffer, and the explicit `DONE` (rather than a
-  FIN) signals success so a close/FIN race can't lose the result.
+Everything above raw TCP lives in the **daemon** and its **pipe** model — named,
+durable byte pipes registered per peer, spliced over a single well-known tunnel
+TCP port (7700), with a one-line `OK`/`UNKNOWN` handshake. `spl serve`/`get`
+(file transfer via the `SHARE_FILE`/`GET_FILE` type pair), `spl chat` (a `PIPE`
+pair), and `spl peer …` (status and plumbing) are thin clients of the daemon's
+unix control socket. The contract — the model, API verbs, wire handshake, type
+catalogue, and rules — is [PIPES.md](PIPES.md).
 
 ## Crypto & dependency stack
 
@@ -159,8 +146,8 @@ The app side speaks lwIP TCP to the peer's ULA address. Two apps ship today:
 - **OpenSSL**: TLS to the server, HKDF, HMAC, ChaCha20-Poly1305.
 - **lwIP** (submodule): userspace TCP/IP.
 
-## Out of scope for v1 (roadmap)
+## Out of scope (roadmap)
 
-File-transfer framing/progress (the path is an nc-style pipe today), a TUN backend
-for system-wide use, ULA address GC, macOS/Windows path-manager backends, and
+Directory/recursive transfer (a coordinator pipe-type pair), a TUN backend for
+system-wide use, ULA address GC, macOS/Windows path-manager backends, and
 Let's Encrypt automation for the server (dev runs use an ephemeral self-signed cert).

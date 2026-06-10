@@ -102,16 +102,12 @@ add_library(spl_peer STATIC
   src/peer/pairing.cpp
   src/peer/wg.cpp
   src/peer/pathman.cpp
-  src/peer/pathwatch.cpp
-  src/peer/datatest.cpp
   src/peer/netstack.cpp
-  src/peer/runtime.cpp
   src/peer/pipes.cpp
   src/peer/daemon.cpp
   src/peer/daemon_client.cpp
   src/peer/serve_get.cpp
   src/peer/chat.cpp
-  src/peer/xfer.cpp
   src/peer/peer_cmd.cpp
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
@@ -223,12 +219,7 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)
     set_tests_properties(chat_integration PROPERTIES TIMEOUT 90)
 
-    # Full stack: pair, then `spl send` a file to `spl receive`.
-    add_test(NAME file_integration
-             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/file_it.py $<TARGET_FILE:spl>)
-    set_tests_properties(file_integration PROPERTIES TIMEOUT 90)
-
-    # Stress: a large file, many files, and a transfer over a lossy path.
+    # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stress_it.py $<TARGET_FILE:spl>)
     set_tests_properties(stress_integration PROPERTIES TIMEOUT 180)

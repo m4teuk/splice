@@ -46,12 +46,9 @@ class TcpConn {
     std::function<void()> fail_cb;
     void attach();  // install recv/sent callbacks (after connect/accept); marks established
 
-    // A connect attempt that failed before it ever established: its pcb is gone and
-    // it was never handed to the app, so it is safe to reap.
-    bool dead_unconnected() const { return !pcb_ && !connected_; }
-    // The pcb is gone (closed or errored): nothing can happen anymore. The app
-    // must drop its pointer in on_closed/on_error/after close(); the owner reaps
-    // dead conns from the loop.
+    // The pcb is gone (closed, errored, or a failed connect): nothing can happen
+    // anymore. The app must drop its pointer in on_closed/on_error/after
+    // close(); the owner reaps dead conns from the loop.
     bool dead() const { return !pcb_; }
 
  private:

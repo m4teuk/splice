@@ -304,30 +304,27 @@ void PathManager::tick(Millis now) {
         t_register_ = now;
         send_register();
     }
-    // Hole-punching (disco) — optionally delayed so the relay phase is observable.
-    if (now - start_ >= cfg_.disco_delay_ms) {
-        if (!external_ && now - t_whereami_ >= kWhereamiMs) {
-            t_whereami_ = now;
-            spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_),
-                             sizeof(whereami_token_));
-            Bytes q = proto::encode_whereami_req(whereami_token_);
-            emit_udp(cfg_.server, as_span(q));
-        }
-        if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
-            t_callme_ = now;
-            Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
-            send_payload(Path::Relay, nullptr, as_span(inner));
-        }
-        // Probe faster while no direct path is up (to get off the rate-limited
-        // relay sooner), slower once one is established (keepalive + RTT refresh).
-        const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
-        if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
-            t_ping_ = now;
-            // Probe every candidate so each keeps a fresh RTT and choose_direct can
-            // pick (and re-pick) the fastest reachable one.
-            Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));
-            for (const auto& c : cands_) send_payload(Path::Direct, &c.ep, as_span(inner));
-        }
+    // Hole-punching (disco).
+    if (!external_ && now - t_whereami_ >= kWhereamiMs) {
+        t_whereami_ = now;
+        spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_), sizeof(whereami_token_));
+        Bytes q = proto::encode_whereami_req(whereami_token_);
+        emit_udp(cfg_.server, as_span(q));
+    }
+    if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
+        t_callme_ = now;
+        Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
+        send_payload(Path::Relay, nullptr, as_span(inner));
+    }
+    // Probe faster while no direct path is up (to get off the rate-limited
+    // relay sooner), slower once one is established (keepalive + RTT refresh).
+    const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
+    if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
+        t_ping_ = now;
+        // Probe every candidate so each keeps a fresh RTT and choose_direct can
+        // pick (and re-pick) the fastest reachable one.
+        Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));
+        for (const auto& c : cands_) send_payload(Path::Direct, &c.ep, as_span(inner));
     }
     update_tx_path(now);
 }

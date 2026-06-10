@@ -23,6 +23,10 @@ struct DaemonOpts {
     uint16_t port = 443;
 };
 
+// Server/port for the daemon: the config file's [peer] section applied over
+// the public relay default.
+DaemonOpts default_daemon_opts();
+
 // Resolved per-user runtime dir ($SPL_RUNTIME_DIR, else $XDG_RUNTIME_DIR/spl,
 // else /tmp/spl-<uid>), created 0700 on first use.
 std::string runtime_dir();

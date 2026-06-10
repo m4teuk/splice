@@ -22,7 +22,6 @@
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
 #include "peer/pipes.h"
-#include "peer/runtime.h"
 
 namespace spl::peer {
 
@@ -37,9 +36,8 @@ struct CommonOpts {
 };
 
 CommonOpts parse(int argc, char** argv) {
-    PeerOpts def = default_peer_opts();
     CommonOpts o;
-    o.daemon = {def.server, def.port};
+    o.daemon = default_daemon_opts();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto val = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };

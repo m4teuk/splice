@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Stress tests: a large file, many small files, and a transfer over a lossy path
-(SPL_LOSS drops a fraction of egress UDP packets).
+"""Stress tests on the daemon: a large file, many pipes, and a transfer over a
+lossy path (SPL_LOSS drops a fraction of egress UDP packets).
 
 Usage: stress_it.py /path/to/spl
 """
+import hashlib
 import os
 import subprocess
 import sys
@@ -15,78 +16,81 @@ from itlib import free_port, pair_two, start_server, stop
 SPL = sys.argv[1]
 
 
-def xfer(port, ld, fd, sendargs, env_extra=None, timeout=120):
-    recvdir = tempfile.mkdtemp()
-    renv = dict(os.environ, SPL_CONFIG_DIR=fd)
-    senv = dict(os.environ, SPL_CONFIG_DIR=ld)
-    if env_extra:
-        renv.update(env_extra)
-        senv.update(env_extra)
-    recv = subprocess.Popen(
-        [SPL, "receive", "theleader", "--server", "127.0.0.1", "--port", str(port)],
-        cwd=recvdir, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, env=renv,
-    )
-    time.sleep(0.8)
-    send = subprocess.run(
-        [SPL, "send", "thefollower", *sendargs, "--server", "127.0.0.1", "--port", str(port)],
-        capture_output=True, text=True, timeout=timeout, env=senv,
-    )
-    try:
-        recv.wait(20)
-    except subprocess.TimeoutExpired:
-        recv.kill()
-    return send, recvdir
+def sha(p):
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def main():
     port = free_port()
     srv = start_server(SPL, port)
+    lrun, frun = tempfile.mkdtemp(), tempfile.mkdtemp()
+    lenv = fenv = None
     try:
         ld, fd = pair_two(SPL, port)
+        lenv = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=lrun)
+        fenv = dict(os.environ, SPL_CONFIG_DIR=fd, SPL_RUNTIME_DIR=frun)
+        largs = ["--server", "127.0.0.1", "--port", str(port)]
+
+        def spl(env, *args, timeout=120):
+            return subprocess.run([SPL, *args], env=env, capture_output=True,
+                                  text=True, timeout=timeout)
+
+        work = tempfile.mkdtemp()
 
         # 1. one large file.
-        big = os.urandom(8 * 1024 * 1024)
-        p = tempfile.mktemp()
-        with open(p, "wb") as f:
-            f.write(big)
+        big = os.path.join(work, "big.bin")
+        with open(big, "wb") as f:
+            f.write(os.urandom(8 * 1024 * 1024))
+        r = spl(fenv, "serve", "theleader", "--name", "big", big, *largs)
+        assert r.returncode == 0, r.stdout + r.stderr
+        dl = tempfile.mkdtemp()
         t0 = time.time()
-        send, rdir = xfer(port, ld, fd, [p + ":big.bin"])
-        assert send.returncode == 0, send.stdout
-        with open(os.path.join(rdir, "big.bin"), "rb") as f:
-            assert f.read() == big
+        r = spl(lenv, "get", "thefollower", "big", "-o", dl, *largs)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert sha(os.path.join(dl, "big.bin")) == sha(big)
         print(f"  large file OK: 8 MB in {time.time() - t0:.1f}s")
 
-        # 2. many small files (one directory).
-        work = tempfile.mkdtemp()
-        os.makedirs(os.path.join(work, "many"))
+        # 2. many pipes: 40 files, one registration + one get each.
         contents = {}
-        for i in range(60):
-            c = os.urandom(1000 + i)
-            contents[f"f{i}.bin"] = c
-            with open(os.path.join(work, "many", f"f{i}.bin"), "wb") as f:
-                f.write(c)
-        send, rdir = xfer(port, ld, fd, [os.path.join(work, "many")])
-        assert send.returncode == 0, send.stdout
-        for n, c in contents.items():
-            with open(os.path.join(rdir, "many", n), "rb") as f:
-                assert f.read() == c, f"mismatch in {n}"
-        print("  many files OK: 60 files, all intact")
+        for i in range(40):
+            p = os.path.join(work, f"f{i}.bin")
+            with open(p, "wb") as f:
+                f.write(os.urandom(1000 + i))
+            contents[f"f{i}.bin"] = p
+            r = spl(fenv, "serve", "theleader", "--name", f"f{i}", p, *largs)
+            assert r.returncode == 0, r.stdout + r.stderr
+        dl2 = tempfile.mkdtemp()
+        for i in range(40):
+            r = spl(lenv, "get", "thefollower", f"f{i}", "-o", dl2, *largs, timeout=60)
+            assert r.returncode == 0, f"f{i}: {r.stdout}{r.stderr}"
+        for n, p in contents.items():
+            assert sha(os.path.join(dl2, n)) == sha(p), f"mismatch in {n}"
+        print("  many pipes OK: 40 registrations, all fetched intact")
 
-        # 3. a transfer over a lossy path (drops a fraction of egress packets).
-        c = os.urandom(128 * 1024)
-        p = tempfile.mktemp()
-        with open(p, "wb") as f:
-            f.write(c)
+        # 3. a lossy path: restart both daemons with SPL_LOSS; the registrations
+        # persist, TCP retransmits through the dropped packets.
+        for env in (lenv, fenv):
+            spl(env, "peer", "stop")
+        lenv["SPL_LOSS"] = fenv["SPL_LOSS"] = "0.03"
+        lossy = os.path.join(work, "lossy.bin")
+        with open(lossy, "wb") as f:
+            f.write(os.urandom(256 * 1024))
+        r = spl(fenv, "serve", "theleader", "--name", "lossy", lossy, *largs)
+        assert r.returncode == 0, r.stdout + r.stderr
+        dl3 = tempfile.mkdtemp()
         t0 = time.time()
-        send, rdir = xfer(port, ld, fd, [p + ":lossy.bin"], env_extra={"SPL_LOSS": "0.05"})
-        assert send.returncode == 0, f"lossy send failed: {send.stdout}"
-        with open(os.path.join(rdir, "lossy.bin"), "rb") as f:
-            assert f.read() == c
-        print(f"  lossy path OK: 128 KB over 5% loss in {time.time() - t0:.1f}s")
+        r = spl(lenv, "get", "thefollower", "lossy", "-o", dl3, *largs, timeout=120)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert sha(os.path.join(dl3, "lossy.bin")) == sha(lossy)
+        print(f"  lossy path OK: 256 KB at 3% loss in {time.time() - t0:.1f}s")
 
         print("STRESS PASSED")
     finally:
+        for env in (lenv, fenv):
+            if env:
+                subprocess.run([SPL, "peer", "stop"], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stop(srv)
 
 

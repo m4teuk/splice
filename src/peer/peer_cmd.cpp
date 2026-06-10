@@ -12,7 +12,6 @@
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
 #include "peer/pairing.h"
-#include "peer/runtime.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -39,13 +38,13 @@ void usage() {
 }
 
 DaemonOpts daemon_opts_from(int argc, char** argv) {
-    PeerOpts o = default_peer_opts();
+    DaemonOpts o = default_daemon_opts();
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--server" && i + 1 < argc) o.server = argv[++i];
         if (a == "--port" && i + 1 < argc) o.port = static_cast<uint16_t>(std::atoi(argv[++i]));
     }
-    return DaemonOpts{o.server, o.port};
+    return o;
 }
 
 int do_start(int argc, char** argv) {
