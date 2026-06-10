@@ -28,6 +28,11 @@ struct DaemonOpts {
 std::string runtime_dir();
 std::string daemon_socket_path();
 
+// Control-line token encoding: '%', space and newlines are %-escaped so that
+// arguments (e.g. file paths) survive the whitespace-split protocol.
+std::string ctl_encode(const std::string& s);
+std::string ctl_decode(const std::string& s);
+
 // Run the daemon in this process; blocks until STOP/SIGTERM. Returns exit code.
 int daemon_run(const DaemonOpts& opts);
 

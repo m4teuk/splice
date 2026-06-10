@@ -109,6 +109,7 @@ add_library(spl_peer STATIC
   src/peer/pipes.cpp
   src/peer/daemon.cpp
   src/peer/daemon_client.cpp
+  src/peer/serve_get.cpp
   src/peer/chat.cpp
   src/peer/xfer.cpp
   src/peer/peer_cmd.cpp
@@ -213,6 +214,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME daemon_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_it.py $<TARGET_FILE:spl>)
     set_tests_properties(daemon_integration PROPERTIES TIMEOUT 120)
+
+    add_test(NAME serve_get_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/serve_get_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(serve_get_integration PROPERTIES TIMEOUT 180)
 
     add_test(NAME chat_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)

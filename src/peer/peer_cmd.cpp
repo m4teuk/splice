@@ -150,11 +150,12 @@ std::vector<std::string> plain_args(int argc, char** argv) {
     return out;
 }
 
+// Joins args as encoded control-protocol tokens (paths may contain spaces).
 std::string join(const std::vector<std::string>& v, size_t from) {
     std::string s;
     for (size_t i = from; i < v.size(); ++i) {
         if (!s.empty()) s += " ";
-        s += v[i];
+        s += ctl_encode(v[i]);
     }
     return s;
 }

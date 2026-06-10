@@ -93,6 +93,9 @@ struct Session {
     std::map<std::string, uint64_t> finished;       // per listening-pipe completion counters
     std::map<uint64_t, std::unique_ptr<Instance>> insts;
     uint64_t next_id = 0;
+    // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
+    // end must never be destroyed while one of its own methods is on the stack.
+    std::vector<uint64_t> want_close;
 };
 
 class Daemon {
@@ -199,15 +202,30 @@ void Daemon::accept_inbound(Session& s, TcpConn* c) {
 // local end and start splicing.
 void Daemon::bind_end(Session& s, Instance& in) {
     in.open = true;
-    if (in.cfd >= 0) {
-        watch_cfd(s, in);  // PIPE: start pumping the client socket
+    Session* sp = &s;
+    const uint64_t id = in.id;
+    if (in.cfd >= 0) {  // PIPE: pump the client socket; resume on tunnel space
+        in.conn->on_writable = [this, sp, id] {
+            auto it = sp->insts.find(id);
+            if (it == sp->insts.end()) return;
+            Instance& in = *it->second;
+            if (!in.cfd_watch && in.conn && in.conn->sndbuf() >= kChunk) watch_cfd(*sp, in);
+        };
+        watch_cfd(s, in);
         return;
     }
     if (in.local) {
         Instance* ip = &in;
-        Session* sp = &s;
+        TcpConn* conn = in.conn;
         in.local->to_tunnel = [this, sp, ip](ByteSpan b) { route_to_tunnel(*sp, *ip, b); };
-        in.local->shutdown = [this, sp, id = in.id] { close_instance(*sp, id, true); };
+        in.local->tunnel_space = [conn]() -> size_t { return conn->sndbuf(); };
+        // Deferred: the end may call shutdown from inside its own methods.
+        in.local->shutdown = [sp, id] { sp->want_close.push_back(id); };
+        conn->on_writable = [this, sp, id] {
+            auto it = sp->insts.find(id);
+            if (it != sp->insts.end() && it->second->local) it->second->local->on_tunnel_writable();
+        };
+        in.local->start();
     }
 }
 
@@ -224,12 +242,11 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
 
     if (!in.open) {  // still handshaking: accumulate one line
         in.lbuf.append(reinterpret_cast<const char*>(b.data()), b.size());
-        if (in.lbuf.size() > 256) {  // garbage; drop the connection
-            close_instance(s, id, false);
+        const size_t nl = in.lbuf.find('\n');
+        if (nl == std::string::npos) {
+            if (in.lbuf.size() > 256) close_instance(s, id, false);  // garbage, not a line
             return;
         }
-        const size_t nl = in.lbuf.find('\n');
-        if (nl == std::string::npos) return;
         std::string line = in.lbuf.substr(0, nl);
         std::string rest = in.lbuf.substr(nl + 1);
         in.lbuf.clear();
@@ -342,6 +359,7 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         in.conn->on_recv = nullptr;
         in.conn->on_closed = nullptr;
         in.conn->on_error = nullptr;
+        in.conn->on_writable = nullptr;
         in.conn->close();
     }
     if (in.inbound && finished) ++s.finished[in.reg];
@@ -368,6 +386,10 @@ void Daemon::tick(Millis now) {
     for (auto& [name, s] : sessions_) {
         s.pm->tick(now);
         s.ns->check_timeouts();
+
+        for (size_t i = 0; i < s.want_close.size(); ++i)  // ends may queue more
+            close_instance(s, s.want_close[i], true);
+        s.want_close.clear();
 
         std::vector<uint64_t> expired;
         for (auto& [id, inp] : s.insts) {
@@ -426,6 +448,7 @@ void Daemon::on_ctl_readable(int fd) {
 
 void Daemon::handle_cmd(int fd, const std::string& line) {
     auto t = split_ws(line);
+    for (auto& tok : t) tok = ctl_decode(tok);
     auto reply_close = [&](const std::string& r) {
         write_str(fd, r);
         drop_ctl(fd, true);
@@ -686,6 +709,40 @@ std::string runtime_dir() {
 }
 
 std::string daemon_socket_path() { return runtime_dir() + "/daemon.sock"; }
+
+std::string ctl_encode(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : s) {
+        if (c == '%' || c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 15];
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    return out;
+}
+
+std::string ctl_decode(const std::string& s) {
+    auto hexv = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return -1;
+    };
+    std::string out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && hexv(s[i + 1]) >= 0 && hexv(s[i + 2]) >= 0) {
+            out += static_cast<char>(hexv(s[i + 1]) * 16 + hexv(s[i + 2]));
+            i += 2;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
 
 int daemon_run(const DaemonOpts& opts) { return Daemon(opts).run(); }
 

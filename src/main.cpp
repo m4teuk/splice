@@ -14,6 +14,7 @@
 #include "peer/datatest.h"
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
+#include "peer/serve_get.h"
 #include "peer/xfer.h"
 #include "server/server_main.h"
 
@@ -44,10 +45,12 @@ void print_usage() {
         "commands:\n"
         "  server                              run the rendezvous + relay server\n"
         "  pair [code]                         pair with another peer\n"
-        "  peer ls | rename | remove | add     manage paired connections\n"
+        "  peer <sub>                          daemon + connections (see spl peer)\n"
+        "  serve <peer> [--name n] <path>      host a file for the peer to fetch\n"
+        "  get <peer> <pipe> [-o p] [-b]       fetch a served file\n"
         "  chat <name>                         bidirectional pipe over the tunnel\n"
-        "  send (s) <name> <path[:newname]>    send a file\n"
-        "  receive (r) <name>                  receive a file\n"
+        "  send (s) <name> <path[:newname]>    send a file (legacy)\n"
+        "  receive (r) <name>                  receive a file (legacy)\n"
         "\n"
         "  --version   print version\n"
         "  --selftest  verify the native (Rust) FFI link\n"
@@ -86,6 +89,8 @@ int main(int argc, char** argv) {
     if (cmd == "server") return cmd_server(argc - 1, argv + 1);
     if (cmd == "pair") return cmd_pair(argc - 1, argv + 1);
     if (cmd == "peer") return cmd_peer(argc - 1, argv + 1);
+    if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
+    if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
     if (cmd == "send" || cmd == "s") return cmd_send(argc - 1, argv + 1);
     if (cmd == "receive" || cmd == "r") return cmd_receive(argc - 1, argv + 1);
