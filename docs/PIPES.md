@@ -79,7 +79,10 @@ drops live ones, and kills running instances.
 - `OPEN` connects to a pipe the peer has registered; `<type> <args…>` describe
   the local end (e.g. `GET_FILE /tmp/out.pdf` connected to Alice's `mypdf`,
   which we happen to know is a `SHARE_FILE` — the daemon neither knows nor
-  cares whether the two types match).
+  cares whether the two types match). An optional `WAIT` token before the type
+  treats `UNKNOWN` as "not registered *yet*": the daemon keeps re-dialing until
+  the pipe appears or the instance is closed. Chat uses it (whoever starts
+  first just waits); `get` does not (a typo'd name should fail fast).
 - `CLOSE` kills any live instance by id — `OPEN`-created ones and instances
   spawned by our own named pipes alike (the registration itself stays and keeps
   listening; it is removed with `UNREGISTER`).
@@ -155,7 +158,7 @@ user's job.
 
 ## Status
 
-`spl peer status` renders the `STATUS` verb. Per peer: the link state (relay or
+`spl status` renders the `STATUS` verb. Per peer: the link state (relay or
 direct, RTT, liveness — the path manager's snapshot), then the pipes:
 
 ```

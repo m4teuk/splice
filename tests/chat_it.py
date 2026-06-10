@@ -78,6 +78,23 @@ def main():
         # leader ^D ends hosting.
         leader.stdin.close()
         assert leader.wait(15) == 0, "leader did not exit after ^D"
+
+        # follower-first: the follower WAITs until the leader shows up.
+        follower = subprocess.Popen(
+            [SPL, "chat", "theleader", *args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=fenv,
+        )
+        time.sleep(1.5)
+        assert follower.poll() is None, "follower gave up before the leader joined"
+        leader = subprocess.Popen(
+            [SPL, "chat", "thefollower", *args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=lenv,
+        )
+        follower.stdin.write(b"second round\n")
+        follower.stdin.flush()
+        out = read_until(leader.stdout, b"second round\n", 20)
+        assert b"second round\n" in out, f"leader received {out!r}"
+        print("  follower-first OK (waited for the leader)")
         print("CHAT E2E PASSED")
     finally:
         stop(follower)

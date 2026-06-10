@@ -58,8 +58,10 @@ int chat_main(int argc, char** argv) {
     }
 
     const bool leader = !rec->side;
+    // The follower WAITs: the leader's chat may not be registered yet (whoever
+    // starts first just sits until the other side shows up).
     const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat PIPE"
-                                    : "OPEN " + ctl_encode(name) + " chat PIPE";
+                                    : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
     const std::string r = send_command(fd, verb);
     if (r.rfind("OK", 0) != 0) {
         spl::logf("spl chat: %s", r.empty() ? "no reply from daemon" : r.c_str());
@@ -68,7 +70,7 @@ int chat_main(int argc, char** argv) {
     }
     if (::isatty(STDERR_FILENO))
         std::fprintf(stderr, leader ? "[chat] hosting; waiting for %s (^D to end)\n"
-                                    : "[chat] connecting to %s (^D to end)\n",
+                                    : "[chat] waiting for %s (^D to end)\n",
                      name.c_str());
 
     const int rc = bridge_stdio(fd, /*exit_on_stdin_eof=*/true);

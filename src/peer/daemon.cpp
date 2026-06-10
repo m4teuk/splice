@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -76,6 +77,7 @@ struct Instance {
     uint64_t up = 0, down = 0;  // bytes local->peer / peer->local
     Millis next_dial = 0, dial_deadline = 0;
     bool dialing = false;
+    bool wait = false;  // OPEN WAIT: UNKNOWN means "not yet" — re-dial until closed
 };
 
 // A live PIPE registration: a client process's socket waiting for connections.
@@ -205,14 +207,19 @@ void Daemon::bind_end(Session& s, Instance& in) {
     in.open = true;
     Session* sp = &s;
     const uint64_t id = in.id;
-    if (in.cfd >= 0) {  // PIPE: pump the client socket; resume on tunnel space
-        in.conn->on_writable = [this, sp, id] {
-            auto it = sp->insts.find(id);
-            if (it == sp->insts.end()) return;
-            Instance& in = *it->second;
-            if (!in.cfd_watch && in.conn && in.conn->sndbuf() >= kChunk) watch_cfd(*sp, in);
-        };
-        watch_cfd(s, in);
+    if (in.cfd >= 0) {
+        // Only pump fds we own (OPEN-PIPE). An inbound PIPE instance shares the
+        // registration owner's fd, whose one and only reader is the broadcast
+        // callback installed at REGISTER — never watch it per-instance.
+        if (in.cfd_owned) {
+            in.conn->on_writable = [this, sp, id] {
+                auto it = sp->insts.find(id);
+                if (it == sp->insts.end()) return;
+                Instance& in = *it->second;
+                if (!in.cfd_watch && in.conn && in.conn->sndbuf() >= kChunk) watch_cfd(*sp, in);
+            };
+            watch_cfd(s, in);
+        }
         return;
     }
     if (in.local) {
@@ -275,6 +282,15 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             bind_end(s, in);
         } else {
             if (line != "OK") {  // UNKNOWN or garbage
+                if (in.wait && in.conn) {  // not registered yet: drop this conn, re-dial
+                    in.conn->on_recv = nullptr;
+                    in.conn->on_closed = nullptr;
+                    in.conn->on_error = nullptr;
+                    in.conn->close();
+                    in.conn = nullptr;
+                    in.next_dial = mono_ms() + 1000;
+                    return;
+                }
                 close_instance(s, id, false);
                 return;
             }
@@ -354,8 +370,10 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     auto it = s.insts.find(id);
     if (it == s.insts.end()) return;
     Instance& in = *it->second;
-    if (in.cfd >= 0 && in.cfd_watch) poller_.remove(in.cfd);
-    if (in.cfd >= 0 && in.cfd_owned) ::close(in.cfd);
+    if (in.cfd >= 0 && in.cfd_owned) {  // a shared (owner) fd is the registration's
+        if (in.cfd_watch) poller_.remove(in.cfd);
+        ::close(in.cfd);
+    }
     if (in.conn) {
         in.conn->on_recv = nullptr;
         in.conn->on_closed = nullptr;
@@ -402,8 +420,9 @@ void Daemon::tick(Millis now) {
                 else if (now >= in.next_dial)
                     dial(s, in, now);
             }
-            // Resume client sockets paused for backpressure.
-            if (in.open && in.cfd >= 0 && !in.cfd_watch && in.conn && in.conn->sndbuf() >= kChunk)
+            // Resume client sockets paused for backpressure (owned fds only).
+            if (in.open && in.cfd >= 0 && in.cfd_owned && !in.cfd_watch && in.conn &&
+                in.conn->sndbuf() >= kChunk)
                 watch_cfd(s, in);
             if (in.local) in.local->tick(now);
         }
@@ -549,19 +568,25 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     }
 
     if (cmd == "OPEN") {
-        if (t.size() < 4) return reply_close("ERR usage: OPEN <peer> <pipe> <TYPE> [args]\n");
+        // OPEN <peer> <pipe> [WAIT] <TYPE> [args] — WAIT keeps re-dialing while
+        // the peer answers UNKNOWN (the pipe isn't registered *yet*).
+        size_t ti = 3;
+        const bool wait = t.size() > ti && t[ti] == "WAIT";
+        if (wait) ++ti;
+        if (t.size() <= ti) return reply_close("ERR usage: OPEN <peer> <pipe> [WAIT] <TYPE> [args]\n");
         std::string err;
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
         auto in = std::make_unique<Instance>();
         in->id = s->next_id++;
         in->want = t[2];
-        in->type = t[3];
+        in->type = t[ti];
+        in->wait = wait;
         const Millis now = mono_ms();
-        in->dial_deadline = now + kDialDeadlineMs;
+        in->dial_deadline = wait ? std::numeric_limits<Millis>::max() : now + kDialDeadlineMs;
         in->next_dial = now;
-        if (t[3] == "PIPE") {
-            if (t.size() != 4) return reply_close("ERR PIPE takes no arguments\n");
+        if (t[ti] == "PIPE") {
+            if (t.size() != ti + 1) return reply_close("ERR PIPE takes no arguments\n");
             in->cfd = fd;
             in->cfd_owned = true;
             write_str(fd, "OK " + std::to_string(in->id) + "\n");
@@ -569,7 +594,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             ctl_.erase(fd);  // fd now belongs to the instance (watched once open)
         } else {
             std::string terr;
-            in->local = make_local_end(t[3], {t.begin() + 4, t.end()}, &terr);
+            in->local = make_local_end(t[ti], {t.begin() + ti + 1, t.end()}, &terr);
             if (!in->local) return reply_close("ERR " + terr + "\n");
             write_str(fd, "OK " + std::to_string(in->id) + "\n");
             drop_ctl(fd, true);

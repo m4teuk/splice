@@ -40,6 +40,7 @@ void print_usage() {
         "commands:\n"
         "  server                              run the rendezvous + relay server\n"
         "  pair [code]                         pair with another peer\n"
+        "  status                              all peers: path, pipes, transfers\n"
         "  peer <sub>                          daemon, pipes + connections (see spl peer)\n"
         "  serve <peer> [--name n] <path>      host a file for the peer to fetch\n"
         "  get <peer> <pipe> [-o p] [-b]       fetch a served file\n"
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
 
     if (cmd == "server") return cmd_server(argc - 1, argv + 1);
     if (cmd == "pair") return cmd_pair(argc - 1, argv + 1);
+    if (cmd == "status") return spl::peer::status_main();
     if (cmd == "peer") return cmd_peer(argc - 1, argv + 1);
     if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
     if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);

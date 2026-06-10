@@ -28,13 +28,14 @@ void usage() {
         "\n"
         "  spl peer start [--foreground] [--server H --port N]   run the daemon\n"
         "  spl peer stop                 stop the daemon\n"
-        "  spl peer status               show sessions and pipes\n"
         "  spl peer reset                drop all pipes (diagnostic stays)\n"
         "\n"
         "  spl peer register <peer> <pipe> <TYPE> [args…]   host a named pipe\n"
         "  spl peer unregister <peer> <pipe>\n"
-        "  spl peer open <peer> <pipe>   connect; stdin/stdout become the pipe\n"
-        "  spl peer close <peer> <#id>   kill a running instance");
+        "  spl peer open [--wait] <peer> <pipe>   connect; stdio becomes the pipe\n"
+        "  spl peer close <peer> <#id>   kill a running instance\n"
+        "\n"
+        "  (status lives at `spl status`)");
 }
 
 DaemonOpts daemon_opts_from(int argc, char** argv) {
@@ -143,10 +144,16 @@ std::vector<std::string> plain_args(int argc, char** argv) {
             ++i;
             continue;
         }
-        if (a == "--foreground") continue;
+        if (a == "--foreground" || a == "--wait") continue;
         out.push_back(a);
     }
     return out;
+}
+
+bool has_flag(int argc, char** argv, const char* flag) {
+    for (int i = 2; i < argc; ++i)
+        if (std::string(argv[i]) == flag) return true;
+    return false;
 }
 
 // Joins args as encoded control-protocol tokens (paths may contain spaces).
@@ -216,6 +223,8 @@ int do_remove(const std::string& name) {
 
 }  // namespace
 
+int status_main() { return do_status(); }
+
 int peer_cmd_main(int argc, char** argv) {
     if (argc < 2) {
         usage();
@@ -265,9 +274,11 @@ int peer_cmd_main(int argc, char** argv) {
             usage();
             return 2;
         }
+        const std::string wait = has_flag(argc, argv, "--wait") ? " WAIT" : "";
         if (a.size() == 2)  // default local end: this process via PIPE
-            return do_pipe_verb(argc, argv, "OPEN " + join(a, 0) + " PIPE");
-        const std::string line = "OPEN " + join(a, 0);
+            return do_pipe_verb(argc, argv, "OPEN " + join(a, 0) + wait + " PIPE");
+        const std::string line = "OPEN " + ctl_encode(a[0]) + " " + ctl_encode(a[1]) + wait +
+                                 " " + join(a, 2);
         return a[2] == "PIPE" ? do_pipe_verb(argc, argv, line) : do_verb(argc, argv, line);
     }
     if (sub == "close") {
