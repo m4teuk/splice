@@ -24,7 +24,8 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err);
 std::string send_command(int fd, const std::string& line);
 
 // Pump stdin -> fd and fd -> stdout until the daemon side closes (or SIGINT).
-// stdin EOF stops the stdin pump but keeps receiving. Returns an exit code.
-int bridge_stdio(int fd);
+// On stdin EOF: keep receiving (default), or return — closing the pipe — when
+// exit_on_stdin_eof is set (chat semantics). Returns an exit code.
+int bridge_stdio(int fd, bool exit_on_stdin_eof = false);
 
 }  // namespace spl::peer

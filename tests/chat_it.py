@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""End-to-end chat test: pair two peers, then deliver a message over `spl chat`.
+"""End-to-end chat test on the daemon: leader hosts a `chat` PIPE, follower
+opens it, messages flow both ways, follower hanging up closes its end.
 
 Usage: chat_it.py /path/to/spl
 """
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -14,55 +16,76 @@ from itlib import free_port, pair_two, start_server, stop
 SPL = sys.argv[1]
 
 
+def read_until(stream, needle, timeout):
+    got = [b""]
+
+    def reader():
+        while needle not in got[0]:
+            d = stream.read1(4096)
+            if not d:
+                break
+            got[0] += d
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    t.join(timeout)
+    return got[0]
+
+
 def main():
     port = free_port()
     srv = start_server(SPL, port)
     leader = follower = None
+    lenv = fenv = None
     try:
         ld, fd = pair_two(SPL, port)
-        payload = b"hello over the chat tunnel\n"
+        lenv = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=tempfile.mkdtemp())
+        fenv = dict(os.environ, SPL_CONFIG_DIR=fd, SPL_RUNTIME_DIR=tempfile.mkdtemp())
+        args = ["--server", "127.0.0.1", "--port", str(port)]
 
-        # leader (side 0) listens; follower (side 1) dials.
+        # leader (side 0) hosts; follower (side 1) opens.
         leader = subprocess.Popen(
-            [SPL, "chat", "thefollower", "--server", "127.0.0.1", "--port", str(port)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=dict(os.environ, SPL_CONFIG_DIR=ld),
+            [SPL, "chat", "thefollower", *args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=lenv,
         )
         time.sleep(0.8)
         follower = subprocess.Popen(
-            [SPL, "chat", "theleader", "--server", "127.0.0.1", "--port", str(port)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env=dict(os.environ, SPL_CONFIG_DIR=fd),
+            [SPL, "chat", "theleader", *args],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=fenv,
         )
         time.sleep(0.6)
 
-        # follower sends the payload then closes its stdin (which tears the chat down).
-        follower.stdin.write(payload)
+        # follower -> leader
+        follower.stdin.write(b"hello from the follower\n")
         follower.stdin.flush()
+        out = read_until(leader.stdout, b"hello from the follower\n", 20)
+        assert b"hello from the follower\n" in out, f"leader received {out!r}"
+        print("  follower -> leader OK")
+
+        # leader -> follower
+        leader.stdin.write(b"hi back\n")
+        leader.stdin.flush()
+        out = read_until(follower.stdout, b"hi back\n", 20)
+        assert b"hi back\n" in out, f"follower received {out!r}"
+        print("  leader -> follower OK")
+
+        # follower hangs up; its process exits, the leader keeps hosting.
         follower.stdin.close()
+        assert follower.wait(15) == 0, "follower did not exit after ^D"
+        assert leader.poll() is None, "leader exited when the follower hung up"
+        print("  hangup OK (leader keeps hosting)")
 
-        # read the leader's stdout until we see the payload (don't touch its stdin,
-        # so the leader stays up until the peer closes).
-        got = [b""]
-
-        def reader():
-            while True:
-                d = leader.stdout.read(4096)
-                if not d:
-                    break
-                got[0] += d
-                if payload in got[0]:
-                    break
-
-        t = threading.Thread(target=reader, daemon=True)
-        t.start()
-        t.join(15)
-        assert payload in got[0], f"leader received {got[0]!r}"
-        print("  chat OK: message delivered over the tunnel")
+        # leader ^D ends hosting.
+        leader.stdin.close()
+        assert leader.wait(15) == 0, "leader did not exit after ^D"
         print("CHAT E2E PASSED")
     finally:
         stop(follower)
         stop(leader)
+        for env in (lenv, fenv):
+            if env:
+                subprocess.run([SPL, "peer", "stop"], env=env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stop(srv)
 
 

@@ -1,30 +1,23 @@
+// spl chat: a terminal on each end of a PIPE pair (docs/PIPES.md).
+//
+// The stored side decides the roles: the leader REGISTERs a `chat` PIPE and
+// hosts it (it keeps listening if the peer hangs up; ^D/^C ends hosting); the
+// follower OPENs it. Both then just bridge their stdio to the daemon.
 #include "peer/chat.h"
 
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
-#include "common/bytes.h"
 #include "common/log.h"
+#include "peer/daemon.h"
+#include "peer/daemon_client.h"
 #include "peer/runtime.h"
+#include "peer/store.h"
 
 namespace spl::peer {
-
-namespace {
-
-constexpr uint16_t kChatPort = 7771;
-
-void write_all(int fd, ByteSpan b) {
-    size_t off = 0;
-    while (off < b.size()) {
-        ssize_t n = ::write(fd, b.data() + off, b.size() - off);
-        if (n <= 0) break;
-        off += static_cast<size_t>(n);
-    }
-}
-
-}  // namespace
 
 int chat_main(int argc, char** argv) {
     PeerOpts opts = default_peer_opts();
@@ -35,8 +28,6 @@ int chat_main(int argc, char** argv) {
             opts.server = argv[++i];
         } else if (a == "--port" && i + 1 < argc) {
             opts.port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        } else if (a == "-v" || a == "--verbose") {
-            opts.verbose = true;
         } else if (!a.empty() && a[0] != '-') {
             name = a;
         } else {
@@ -50,54 +41,41 @@ int chat_main(int argc, char** argv) {
     }
 
     std::string err;
-    auto rt = PeerRuntime::create(name, opts, &err);
-    if (!rt) {
-        spl::logf("spl chat: %s", err.c_str());
+    auto store = Store::open(&err);
+    auto rec = store ? store->load(name) : std::nullopt;
+    if (!rec) {
+        spl::logf("spl chat: no connection named '%s' (pair first)", name.c_str());
         return 1;
     }
 
-    TcpConn* conn = nullptr;
-    auto on_stdin = [&]() {
-        if (!conn) return;
-        uint8_t buf[4096];
-        ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
-        if (n > 0) {
-            conn->send(ByteSpan(buf, static_cast<size_t>(n)));
-        } else {  // our stdin closed -> tear the whole chat down
-            rt->unwatch_fd(STDIN_FILENO);
-            conn->close();
-            g_stop.store(true);
-        }
-    };
-    auto wire = [&](TcpConn* c) {
-        conn = c;
-        c->on_recv = [&](ByteSpan b) { write_all(STDOUT_FILENO, b); };
-        c->on_closed = [&]() { g_stop.store(true); };  // peer closed -> end chat
-        c->on_error = [&]() { g_stop.store(true); };
-        rt->watch_fd(STDIN_FILENO, on_stdin);
-    };
-
-    if (rt->is_leader()) {
-        if (opts.verbose) spl::logf("[chat] waiting for %s...", name.c_str());
-        rt->ns().listen(kChatPort, [&](TcpConn* c) {
-            if (opts.verbose) spl::logf("[chat] connected");
-            wire(c);
-        });
-    } else {
-        rt->ns().connect(
-            rt->peer_addr(), kChatPort,
-            [&](TcpConn* c) {
-                if (opts.verbose) spl::logf("[chat] connected");
-                wire(c);
-            },
-            [&]() {
-                spl::logf("[chat] could not connect to %s", name.c_str());
-                g_stop.store(true);
-            });
+    if (!ensure_daemon(DaemonOpts{opts.server, opts.port}, &err)) {
+        spl::logf("spl chat: %s", err.c_str());
+        return 1;
+    }
+    int fd = daemon_connect();
+    if (fd < 0) {
+        spl::logf("spl chat: cannot reach the daemon");
+        return 1;
     }
 
-    rt->run();
-    return 0;
+    const bool leader = !rec->side;
+    const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat PIPE"
+                                    : "OPEN " + ctl_encode(name) + " chat PIPE";
+    const std::string r = send_command(fd, verb);
+    if (r.rfind("OK", 0) != 0) {
+        spl::logf("spl chat: %s", r.empty() ? "no reply from daemon" : r.c_str());
+        ::close(fd);
+        return 1;
+    }
+    if (::isatty(STDERR_FILENO))
+        std::fprintf(stderr, leader ? "[chat] hosting; waiting for %s (^D to end)\n"
+                                    : "[chat] connecting to %s (^D to end)\n",
+                     name.c_str());
+
+    const int rc = bridge_stdio(fd, /*exit_on_stdin_eof=*/true);
+    ::close(fd);
+    if (::isatty(STDERR_FILENO)) std::fprintf(stderr, "[chat] closed\n");
+    return rc;
 }
 
 }  // namespace spl::peer

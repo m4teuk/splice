@@ -98,7 +98,7 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
     return false;
 }
 
-int bridge_stdio(int fd) {
+int bridge_stdio(int fd, bool exit_on_stdin_eof) {
     std::signal(SIGPIPE, SIG_IGN);
     bool stdin_open = true;
     for (;;) {
@@ -120,7 +120,8 @@ int bridge_stdio(int fd) {
             char buf[4096];
             ssize_t r = ::read(STDIN_FILENO, buf, sizeof(buf));
             if (r <= 0) {
-                stdin_open = false;  // keep draining the pipe side
+                if (exit_on_stdin_eof) return 0;  // we hang up
+                stdin_open = false;               // keep draining the pipe side
             } else {
                 write_all(fd, buf, static_cast<size_t>(r));
             }
