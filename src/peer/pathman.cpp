@@ -1,16 +1,13 @@
 #include "peer/pathman.h"
 
-#include <poll.h>
 #include <sys/socket.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <vector>
 
 #include "common/bytes.h"
-#include "common/log.h"
 #include "native/native.h"
 #include "proto/relay.h"
 
@@ -97,14 +94,11 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
 
     // Enumerate our own LAN addresses once. We reach peers from a single socket,
     // so a peer on the same network reaches us at <interface ip>:<our local port>.
-    const uint16_t lp = net::local_port(udp_.get());
-    local_eps_ = net::local_interface_endpoints(lp);
-    if (cfg_.verbose && !local_eps_.empty()) {
-        std::string s;
-        for (const auto& e : local_eps_) s += " " + e.to_string();
-        spl::logf("[path] advertising %zu local iface candidate(s) on port %u:%s",
-                  local_eps_.size(), lp, s.c_str());
-    }
+    local_eps_ = net::local_interface_endpoints(net::local_port(udp_.get()));
+
+    net::set_nonblocking(udp_.get(), true);
+    send_register();
+    start_ = mono_ms();
 }
 
 void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
@@ -178,16 +172,11 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         // one simply never goes alive. RTT selection then picks the best reachable
         // path — no address range is special-cased.
         const uint8_t n = r.u8();  // absent in a truncated/old CALLME -> !r.ok() -> no locals
-        std::string adv;
         for (uint8_t i = 0; r.ok() && i < n; ++i) {
             Endpoint le{r.array<16>(), r.u16()};
             if (!r.ok()) break;
             add_cand(le, /*lan=*/true);
-            adv += " " + le.to_string();
         }
-        if (cfg_.verbose)
-            spl::logf("[disco] <- CALLME: peer external %s, %u iface addr(s):%s",
-                      ext.to_string().c_str(), n, adv.empty() ? " (none)" : adv.c_str());
     } else if (dt == DISCO_PING) {
         const uint64_t tx = r.u64();
         if (!r.ok() || !from) return;
@@ -200,14 +189,10 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         // unknown source can neither add itself nor keep the direct path alive.
         if (!r.ok() || tx != ping_txid_ || !from) return;
         if (DirectCand* c = find_cand(*from)) {
-            const bool was_alive = c->last_rx && now - c->last_rx < kDirectDeadMs;
             c->last_rx = now;
             Millis rtt = now - t_ping_;  // this token went out at t_ping_
             if (rtt < 1) rtt = 1;
             c->srtt = c->srtt ? (c->srtt * 3 + rtt) / 4 : rtt;  // EWMA toward the latest sample
-            if (cfg_.verbose && !was_alive)
-                spl::logf("[disco] <- PONG from %s: candidate now ALIVE (rtt %lldms)",
-                          from->to_string().c_str(), static_cast<long long>(rtt));
         }
     }
 }
@@ -230,13 +215,7 @@ void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
         auto t = proto::peek_udp_type(raw);
         if (t == proto::UdpType::kWhereami) {
             auto rep = proto::decode_whereami_reply(raw);
-            if (rep && rep->token == whereami_token_) {
-                Endpoint e{rep->ip, rep->port};
-                if (!external_ || *external_ != e) {
-                    external_ = e;
-                    if (cfg_.verbose) spl::logf("[path] external address %s", e.to_string().c_str());
-                }
-            }
+            if (rep && rep->token == whereami_token_) external_ = Endpoint{rep->ip, rep->port};
         } else if (t == proto::UdpType::kRelay) {
             auto inner = proto::decode_relay_down(raw);
             if (inner) dispatch_inner(as_span(*inner), Path::Relay, nullptr, now);
@@ -248,11 +227,7 @@ void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
 
 void PathManager::update_tx_path(Millis now) {
     choose_direct(now);
-    const Path want = (!force_relay_ && direct_confirmed_) ? Path::Direct : Path::Relay;
-    if (want != tx_path_) {
-        tx_path_ = want;
-        if (cfg_.verbose) spl::logf("[path] switched to %s", path_name(want));
-    }
+    tx_path_ = (!force_relay_ && direct_confirmed_) ? Path::Direct : Path::Relay;
 }
 
 PathManager::DirectCand* PathManager::find_cand(const Endpoint& ep) {
@@ -269,8 +244,6 @@ void PathManager::add_cand(const Endpoint& ep, bool lan) {
     }
     if (cands_.size() >= kMaxCands) return;
     cands_.push_back({ep, lan, 0});
-    if (cfg_.verbose)
-        spl::logf("[path] candidate %s%s", ep.to_string().c_str(), lan ? " (LAN)" : "");
 }
 
 void PathManager::touch_cand(const Endpoint& from, Millis now) {
@@ -300,118 +273,85 @@ void PathManager::choose_direct(Millis now) {
         if (DirectCand* cur = find_cand(*chosen_))
             if (alive(*cur) && best && score(*cur) <= score(*best) + score(*best) / 4) best = cur;
 
-    const bool was = direct_confirmed_;
     if (best) {
-        if (!chosen_ || *chosen_ != best->ep)
-            if (cfg_.verbose)
-                spl::logf("[path] direct via %s%s (~%lldms)", best->ep.to_string().c_str(),
-                          best->lan ? " LAN" : "", static_cast<long long>(best->srtt));
         chosen_ = best->ep;
-        chosen_lan_ = best->lan;
         direct_confirmed_ = true;
     } else {
         chosen_.reset();
-        chosen_lan_ = false;
         direct_confirmed_ = false;
-        if (was && cfg_.verbose) spl::logf("[path] direct path lost");
     }
 }
 
-// Verbose: one glance at the whole path state — every candidate, whether it has
-// answered, its RTT, and which one we are using.
-void PathManager::dump_paths(Millis now) {
-    spl::logf("[path] active=%s | our external=%s | %zu candidate(s):", path_name(tx_path_),
-              external_ ? external_->to_string().c_str() : "(unknown)", cands_.size());
+void PathManager::handle_io(Millis now) {
+    uint8_t buf[4096];
+    for (;;) {
+        sockaddr_storage ss{};
+        socklen_t slen = sizeof(ss);
+        ssize_t n = ::recvfrom(udp_.get(), buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&ss),
+                               &slen);
+        if (n < 0) break;
+        process(endpoint_from_sockaddr(ss), ByteSpan(buf, static_cast<size_t>(n)), now);
+    }
+}
+
+void PathManager::tick(Millis now) {
+    if (now - t_tick_ >= kTickMs) {
+        t_tick_ = now;
+        WgResult r = wg_.tick();
+        if (r.op == WgOp::WriteToNetwork) send_wg(as_span(r.data));
+    }
+    if (now - t_register_ >= kRegisterMs) {
+        t_register_ = now;
+        send_register();
+    }
+    // Hole-punching (disco) — optionally delayed so the relay phase is observable.
+    if (now - start_ >= cfg_.disco_delay_ms) {
+        if (!external_ && now - t_whereami_ >= kWhereamiMs) {
+            t_whereami_ = now;
+            spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_),
+                             sizeof(whereami_token_));
+            Bytes q = proto::encode_whereami_req(whereami_token_);
+            emit_udp(cfg_.server, as_span(q));
+        }
+        if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
+            t_callme_ = now;
+            Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
+            send_payload(Path::Relay, nullptr, as_span(inner));
+        }
+        // Probe faster while no direct path is up (to get off the rate-limited
+        // relay sooner), slower once one is established (keepalive + RTT refresh).
+        const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
+        if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
+            t_ping_ = now;
+            // Probe every candidate so each keeps a fresh RTT and choose_direct can
+            // pick (and re-pick) the fastest reachable one.
+            Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));
+            for (const auto& c : cands_) send_payload(Path::Direct, &c.ep, as_span(inner));
+        }
+    }
+    update_tx_path(now);
+}
+
+PathStatus PathManager::status(Millis now) const {
+    PathStatus s;
+    s.active = tx_path_;
+    s.direct_confirmed = direct_confirmed_;
+    s.external = external_;
+    s.tx_direct = tx_direct_;
+    s.tx_relay = tx_relay_;
+    s.rx_direct = rx_direct_;
+    s.rx_relay = rx_relay_;
     for (const auto& c : cands_) {
-        const bool live = c.last_rx && now - c.last_rx < kDirectDeadMs;
-        const bool using_it = chosen_ && *chosen_ == c.ep;
-        const std::string rtt = c.srtt ? std::to_string(static_cast<long long>(c.srtt)) + "ms" : "?";
-        const std::string seen =
-            c.last_rx ? std::to_string(now - c.last_rx) + "ms ago" : "no reply yet";
-        spl::logf("[path]   %s %s [%s] %s rtt=%s, last reply %s", using_it ? "USE->" : "     ",
-                  c.ep.to_string().c_str(), c.lan ? "iface" : "ext ", live ? "ALIVE" : "dead ",
-                  rtt.c_str(), seen.c_str());
+        PathStatus::Cand out;
+        out.ep = c.ep;
+        out.lan = c.lan;
+        out.alive = c.last_rx && now - c.last_rx < kDirectDeadMs;
+        out.in_use = chosen_ && *chosen_ == c.ep;
+        out.rtt = c.srtt;
+        out.reply_age = c.last_rx ? now - c.last_rx : -1;
+        s.cands.push_back(out);
     }
-}
-
-void PathManager::run(std::atomic<bool>& stop) {
-    net::set_nonblocking(udp_.get(), true);
-    send_register();
-    start_ = mono_ms();
-
-    std::vector<uint8_t> buf(4096);
-    while (!stop.load()) {
-        pollfd pfds[2];
-        pfds[0] = pollfd{udp_.get(), POLLIN, 0};
-        int nfds = 1;
-        if (extra_fd_ >= 0) {
-            pfds[1] = pollfd{extra_fd_, POLLIN, 0};
-            nfds = 2;
-        }
-        ::poll(pfds, nfds, 100);
-        const Millis now = mono_ms();
-
-        if (pfds[0].revents & POLLIN) {
-            for (;;) {
-                sockaddr_storage ss{};
-                socklen_t slen = sizeof(ss);
-                ssize_t n = ::recvfrom(udp_.get(), buf.data(), buf.size(), 0,
-                                       reinterpret_cast<sockaddr*>(&ss), &slen);
-                if (n < 0) break;
-                process(endpoint_from_sockaddr(ss), ByteSpan(buf.data(), static_cast<size_t>(n)),
-                        now);
-            }
-        }
-        if (nfds == 2 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR)) && on_extra_readable_) {
-            on_extra_readable_();
-        }
-
-        if (now - t_tick_ >= kTickMs) {
-            t_tick_ = now;
-            WgResult r = wg_.tick();
-            if (r.op == WgOp::WriteToNetwork) send_wg(as_span(r.data));
-        }
-        if (now - t_register_ >= kRegisterMs) {
-            t_register_ = now;
-            send_register();
-        }
-        // Hole-punching (disco) — optionally delayed so the relay phase is observable.
-        if (now - start_ >= cfg_.disco_delay_ms) {
-            if (!external_ && now - t_whereami_ >= kWhereamiMs) {
-                t_whereami_ = now;
-                spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_),
-                                 sizeof(whereami_token_));
-                Bytes q = proto::encode_whereami_req(whereami_token_);
-                emit_udp(cfg_.server, as_span(q));
-            }
-            if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
-                t_callme_ = now;
-                Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
-                send_payload(Path::Relay, nullptr, as_span(inner));
-            }
-            // Probe faster while no direct path is up (to get off the rate-limited
-            // relay sooner), slower once one is established (keepalive + RTT refresh).
-            const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
-            if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
-                t_ping_ = now;
-                // Probe every candidate so each keeps a fresh RTT and choose_direct can
-                // pick (and re-pick) the fastest reachable one.
-                Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));
-                for (const auto& c : cands_) send_payload(Path::Direct, &c.ep, as_span(inner));
-            }
-        }
-
-        update_tx_path(now);
-        if (cfg_.verbose && now - t_stats_ >= 2000) {
-            t_stats_ = now;
-            spl::logf("[stats] path=%s | tx: direct %s / relay %s | rx: direct %s / relay %s",
-                      path_name(tx_path_), human_bytes(tx_direct_).c_str(),
-                      human_bytes(tx_relay_).c_str(), human_bytes(rx_direct_).c_str(),
-                      human_bytes(rx_relay_).c_str());
-            dump_paths(now);
-        }
-        if (on_tick) on_tick(now);
-    }
+    return s;
 }
 
 }  // namespace spl::peer

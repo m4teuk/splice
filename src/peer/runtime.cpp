@@ -12,19 +12,21 @@ std::atomic<bool> g_stop{false};
 namespace {
 void on_signal(int) { g_stop.store(true); }
 
-PathConfig make_cfg(const ConnRecord& rec, const Endpoint& server, bool verbose) {
+PathConfig make_cfg(const ConnRecord& rec, const Endpoint& server) {
     PathConfig c;
     c.uid = rec.uid;
     c.own_priv = rec.own_priv;
     c.peer_pub = rec.peer_pub;
     c.server = server;
-    c.verbose = verbose;
     return c;
 }
 }  // namespace
 
 PeerRuntime::PeerRuntime(ConnRecord rec, net::Fd udp, Endpoint server, bool verbose)
-    : rec_(std::move(rec)), pm_(std::move(udp), make_cfg(rec_, server, verbose)), ns_() {
+    : rec_(std::move(rec)),
+      pm_(std::move(udp), make_cfg(rec_, server)),
+      ns_(),
+      verbose_(verbose) {
     own_ = rec_.ula_base;
     own_[15] = rec_.side ? 2 : 1;
     peer_ = rec_.ula_base;
@@ -33,10 +35,7 @@ PeerRuntime::PeerRuntime(ConnRecord rec, net::Fd udp, Endpoint server, bool verb
     ns_.configure(own_);
     pm_.on_inner = [this](ByteSpan inner, Path) { ns_.input(inner); };
     ns_.on_output = [this](ByteSpan ip) { pm_.send_inner(ip); };
-    pm_.on_tick = [this](Millis now) {
-        ns_.check_timeouts();
-        if (on_app_tick) on_app_tick(now);
-    };
+    poller_.set(pm_.fd(), [this] { pm_.handle_io(mono_ms()); });
 
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
@@ -67,7 +66,14 @@ std::unique_ptr<PeerRuntime> PeerRuntime::create(const std::string& conn_name, c
         new PeerRuntime(std::move(*rec), std::move(udp), *srv, opts.verbose));
 }
 
-void PeerRuntime::run() { pm_.run(g_stop); }
+void PeerRuntime::run() {
+    poller_.run(g_stop, [this](Millis now) {
+        pm_.tick(now);
+        ns_.check_timeouts();
+        if (verbose_) watch_.render(pm_.status(now), now);
+        if (on_app_tick) on_app_tick(now);
+    });
+}
 
 PeerOpts default_peer_opts() {
     PeerOpts o;

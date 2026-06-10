@@ -64,6 +64,7 @@ find_package(OpenSSL REQUIRED)
 add_library(spl_net STATIC
   src/net/socket.cpp
   src/net/tls.cpp
+  src/net/poller.cpp
 )
 target_include_directories(spl_net PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(spl_net PUBLIC spl_core OpenSSL::SSL OpenSSL::Crypto)
@@ -101,6 +102,7 @@ add_library(spl_peer STATIC
   src/peer/pairing.cpp
   src/peer/wg.cpp
   src/peer/pathman.cpp
+  src/peer/pathwatch.cpp
   src/peer/datatest.cpp
   src/peer/netstack.cpp
   src/peer/runtime.cpp

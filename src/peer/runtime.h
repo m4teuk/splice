@@ -9,8 +9,10 @@
 #include <string>
 
 #include "net/endpoint.h"
+#include "net/poller.h"
 #include "peer/netstack.h"
 #include "peer/pathman.h"
+#include "peer/pathwatch.h"
 #include "peer/store.h"
 #include "proto/pairing.h"
 
@@ -46,6 +48,10 @@ class PeerRuntime {
     const proto::Ip6& peer_addr() const { return peer_; }
     bool is_leader() const { return !rec_.side; }
 
+    // Also poll an extra fd (e.g. stdin) and invoke cb when it is readable.
+    void watch_fd(int fd, std::function<void()> cb) { poller_.set(fd, std::move(cb)); }
+    void unwatch_fd(int fd) { poller_.remove(fd); }
+
     void run();  // blocks until g_stop
 
  private:
@@ -55,6 +61,9 @@ class PeerRuntime {
     proto::Ip6 own_{}, peer_{};
     PathManager pm_;
     Netstack ns_;
+    net::Poller poller_;
+    PathWatch watch_;
+    bool verbose_ = false;
 };
 
 }  // namespace spl::peer

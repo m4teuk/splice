@@ -9,8 +9,10 @@
 
 #include "common/bytes.h"
 #include "common/log.h"
+#include "net/poller.h"
 #include "net/socket.h"
 #include "peer/pathman.h"
+#include "peer/pathwatch.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -129,7 +131,6 @@ int datatest_main(int argc, char** argv) {
     cfg.own_priv = rec->own_priv;
     cfg.peer_pub = rec->peer_pub;
     cfg.server = *srv;
-    cfg.verbose = verbose;
     cfg.disco_delay_ms = disco_delay;
     PathManager pm(std::move(udp), cfg);
 
@@ -165,7 +166,18 @@ int datatest_main(int argc, char** argv) {
             pm.send_inner(as_span(echo));
         }
     };
-    pm.on_tick = [&](Millis now) {
+    if (verbose)
+        spl::logf("datatest '%s' as %s (side %d)", name.c_str(),
+                  initiate ? "initiator" : "responder", rec->side ? 1 : 0);
+    t0 = mono_ms();
+    deadline = t0 + (run_seconds > 0 ? run_seconds * 1000 : 25000);
+
+    net::Poller poller;
+    PathWatch watch;
+    poller.set(pm.fd(), [&] { pm.handle_io(mono_ms()); });
+    poller.run(g_stop, [&](Millis now) {
+        pm.tick(now);
+        if (verbose) watch.render(pm.status(now), now);
         if (now >= deadline) {
             g_stop.store(true);
             return;
@@ -180,14 +192,7 @@ int datatest_main(int argc, char** argv) {
             Bytes req = make_echo(own_addr, peer_addr, ++seq);
             pm.send_inner(as_span(req));
         }
-    };
-
-    if (verbose)
-        spl::logf("datatest '%s' as %s (side %d)", name.c_str(),
-                  initiate ? "initiator" : "responder", rec->side ? 1 : 0);
-    t0 = mono_ms();
-    deadline = t0 + (run_seconds > 0 ? run_seconds * 1000 : 25000);
-    pm.run(g_stop);
+    });
 
     if (initiate && early_stop) return (seen_relay && seen_direct) ? 0 : 1;
     return 0;

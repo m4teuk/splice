@@ -64,7 +64,7 @@ int chat_main(int argc, char** argv) {
         if (n > 0) {
             conn->send(ByteSpan(buf, static_cast<size_t>(n)));
         } else {  // our stdin closed -> tear the whole chat down
-            rt->pm().unwatch_fd();
+            rt->unwatch_fd(STDIN_FILENO);
             conn->close();
             g_stop.store(true);
         }
@@ -74,7 +74,7 @@ int chat_main(int argc, char** argv) {
         c->on_recv = [&](ByteSpan b) { write_all(STDOUT_FILENO, b); };
         c->on_closed = [&]() { g_stop.store(true); };  // peer closed -> end chat
         c->on_error = [&]() { g_stop.store(true); };
-        rt->pm().watch_fd(STDIN_FILENO, on_stdin);
+        rt->watch_fd(STDIN_FILENO, on_stdin);
     };
 
     if (rt->is_leader()) {

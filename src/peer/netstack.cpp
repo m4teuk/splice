@@ -62,6 +62,16 @@ TcpConn::TcpConn(tcp_pcb* pcb) : pcb_(pcb) {
     tcp_err(pcb_, tramp_err);
 }
 
+TcpConn::~TcpConn() {
+    if (!pcb_) return;
+    tcp_arg(pcb_, nullptr);  // silence callbacks before the abort
+    tcp_recv(pcb_, nullptr);
+    tcp_sent(pcb_, nullptr);
+    tcp_err(pcb_, nullptr);
+    tcp_abort(pcb_);
+    pcb_ = nullptr;
+}
+
 void TcpConn::attach() {
     if (!pcb_) return;
     connected_ = true;  // established (connect succeeded or we accepted it)
@@ -154,14 +164,25 @@ int TcpConn::on_lwip_connected(int err) {
 
 // ---- Netstack ----
 
-Netstack::Netstack() { lwip_init(); }
+Netstack::Netstack() {
+    static bool lwip_inited = false;  // lwIP globals are process-wide; init once
+    if (!lwip_inited) {
+        lwip_init();
+        lwip_inited = true;
+    }
+}
 
 Netstack::~Netstack() {
+    conns_.clear();  // aborts surviving pcbs while our netif still exists
     if (listen_pcb_) tcp_close(listen_pcb_);
-    delete netif_;
+    if (netif_) {
+        netif_remove(netif_);  // lwIP keeps netifs in a global list
+        delete netif_;
+    }
 }
 
 void Netstack::configure(const proto::Ip6& own_addr) {
+    own_addr_ = own_addr;
     netif_ = new netif{};
     netif_add(netif_, this, tramp_netif_init, tramp_netif_input);
     netif_set_default(netif_);
@@ -204,7 +225,10 @@ void Netstack::listen(uint16_t port, std::function<void(TcpConn*)> on_accept) {
     accept_cb_ = std::move(on_accept);
     tcp_pcb* pcb = tcp_new_ip_type(IPADDR_TYPE_V6);
     if (!pcb) return;  // out of memory
-    if (tcp_bind(pcb, IP_ANY_TYPE, port) != ERR_OK) {
+    ip_addr_t own;
+    std::memset(&own, 0, sizeof(own));
+    std::memcpy(&own, own_addr_.data(), 16);  // ip_addr_t == ip6_addr_t with LWIP_IPV4=0
+    if (tcp_bind(pcb, &own, port) != ERR_OK) {
         tcp_close(pcb);
         return;
     }

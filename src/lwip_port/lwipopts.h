@@ -35,7 +35,8 @@
 #define LWIP_RAW 0
 #define LWIP_DNS 0
 
-#define LWIP_SINGLE_NETIF 1
+// Multiple netifs: one per peer session; each pairing's disjoint ULA /64 lets
+// lwIP route between them by on-link prefix match.
 #define LWIP_NETIF_STATUS_CALLBACK 0
 #define LWIP_NETIF_LINK_CALLBACK 0
 // Loop packets addressed to our own tunnel address back internally (also lets us

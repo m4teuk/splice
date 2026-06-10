@@ -17,9 +17,12 @@
 //
 // All peer<->peer datagrams (relayed or direct) are [channel:1][body]:
 //   channel 0x00 = WireGuard, 0x01 = disco (path control).
+//
+// The manager performs no event loop of its own: the owner polls fd() and calls
+// handle_io() when it is readable and tick() once per loop round. It also does
+// no logging — observers read the status() snapshot.
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -41,36 +44,47 @@ struct PathConfig {
     proto::WgKey own_priv;
     proto::WgKey peer_pub;
     Endpoint server;       // resolved rendezvous/relay server address
-    bool verbose = false;
     Millis disco_delay_ms = 0;  // delay hole-punching (makes the relay phase observable)
+};
+
+// Read-only snapshot of the path state, for status displays. The path manager
+// never renders or logs; this is its single observation surface.
+struct PathStatus {
+    struct Cand {
+        Endpoint ep;
+        bool lan = false;     // advertised as a peer interface address
+        bool alive = false;
+        bool in_use = false;  // the currently chosen direct path
+        Millis rtt = 0;       // smoothed PONG round-trip; 0 = not yet measured
+        Millis reply_age = -1;  // ms since last inbound from this address; -1 = never
+    };
+    Path active = Path::Relay;
+    bool direct_confirmed = false;
+    std::optional<Endpoint> external;  // our address as seen by the server
+    uint64_t tx_direct = 0, tx_relay = 0, rx_direct = 0, rx_relay = 0;  // bytes
+    std::vector<Cand> cands;
 };
 
 class PathManager {
  public:
+    // Sends the initial relay registration; the owner must start polling fd().
     PathManager(net::Fd udp, PathConfig cfg);
 
     // Invoked for each decrypted inner IP packet, tagged with the path it arrived on.
     std::function<void(ByteSpan inner, Path via)> on_inner;
-    // Invoked once per loop iteration (the app may send via send_inner here).
-    std::function<void(Millis now)> on_tick;
 
-    void run(std::atomic<bool>& stop);
+    int fd() const { return udp_.get(); }
+    void handle_io(Millis now);  // drain + process readable datagrams
+    void tick(Millis now);       // drive WG timers, registration, disco, path choice
 
     bool send_inner(ByteSpan ip_packet);  // encapsulate + send over the active path
 
     Path tx_path() const { return tx_path_; }
     bool direct_confirmed() const { return direct_confirmed_; }
-    std::optional<Endpoint> external() const { return external_; }
+    PathStatus status(Millis now) const;
 
     // Pin to the relay and ignore the direct path (used to simulate direct loss).
     void set_force_relay(bool f) { force_relay_ = f; }
-
-    // Also poll an extra fd (e.g. stdin) and invoke cb when it is readable.
-    void watch_fd(int fd, std::function<void()> cb) {
-        extra_fd_ = fd;
-        on_extra_readable_ = std::move(cb);
-    }
-    void unwatch_fd() { extra_fd_ = -1; }
 
  private:
     // A direct-path candidate we probe with disco PING/PONG.
@@ -99,7 +113,6 @@ class PathManager {
     void add_cand(const Endpoint& ep, bool lan);        // register a probe target (deduped)
     void touch_cand(const Endpoint& from, Millis now);  // record inbound liveness
     void choose_direct(Millis now);  // pick the active path (lowest-RTT alive candidate)
-    void dump_paths(Millis now);     // verbose: log the candidate table + active path
 
     net::Fd udp_;
     PathConfig cfg_;
@@ -109,17 +122,14 @@ class PathManager {
     std::optional<Endpoint> external_;  // our address as seen by the server
     std::vector<DirectCand> cands_;     // direct-path probe targets (external + any LAN)
     std::optional<Endpoint> chosen_;    // the active direct path (best alive candidate)
-    bool chosen_lan_ = false;
     bool direct_confirmed_ = false;  // derived: some candidate is currently alive
     bool force_relay_ = false;
 
     std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 
-    int extra_fd_ = -1;
-    std::function<void()> on_extra_readable_;
     Millis start_ = 0;
-    Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0, t_stats_ = 0;
-    // verbose throughput counters (bytes), split by path
+    Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0;
+    // throughput counters (bytes), split by path
     uint64_t tx_direct_ = 0, tx_relay_ = 0, rx_direct_ = 0, rx_relay_ = 0;
     double loss_ = 0.0;  // SPL_LOSS: fraction of egress packets to drop (testing)
     uint64_t rng_ = 0;

@@ -1,6 +1,8 @@
-// Userspace TCP/IP via lwIP (NO_SYS, IPv6-only). lwIP is process-global, so there
-// is one Netstack per process. Outgoing IP packets go to on_output (the path
-// manager); received inner packets are fed in via input().
+// Userspace TCP/IP via lwIP (NO_SYS, IPv6-only). lwIP itself is process-global
+// and initialized once; each Netstack owns one netif, so a process may run one
+// per peer session (the disjoint ULA /64s route between them). Outgoing IP
+// packets go to on_output (the path manager); received inner packets are fed in
+// via input(). All Netstacks share one thread — the owner's event loop.
 #pragma once
 
 #include <cstdint>
@@ -28,6 +30,7 @@ class TcpConn {
     size_t sndbuf() const;  // bytes that can be queued right now
 
     explicit TcpConn(tcp_pcb* pcb);
+    ~TcpConn();  // aborts the pcb if still open (no callbacks fire)
 
     void send(ByteSpan data);  // queues and flushes subject to TCP flow control
     void close();        // request close; the teardown is deferred to poll_close()
@@ -69,6 +72,8 @@ class Netstack {
 
     std::function<void(ByteSpan)> on_output;  // sink for outgoing inner IP packets
 
+    // Listens on our own tunnel address (not IP_ANY, so per-session listeners
+    // on the same port don't collide).
     void listen(uint16_t port, std::function<void(TcpConn*)> on_accept);
     void connect(const proto::Ip6& peer, uint16_t port, std::function<void(TcpConn*)> on_connect,
                  std::function<void()> on_fail);
@@ -79,6 +84,7 @@ class Netstack {
 
  private:
     netif* netif_ = nullptr;
+    proto::Ip6 own_addr_{};
     tcp_pcb* listen_pcb_ = nullptr;
     std::function<void(TcpConn*)> accept_cb_;
     std::vector<std::unique_ptr<TcpConn>> conns_;
