@@ -173,6 +173,78 @@ bool Store::remove(const std::string& name) {
     return std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) == 0;
 }
 
+// ---- persistent pipe registrations: <dir>/pipes/<peer>/<name> ----
+
+bool Store::save_pipe(const PipeRecord& r, std::string* err) {
+    const std::string pdir = dir_ + "/pipes/" + sanitize(r.peer);
+    if (!mkdirs(pdir)) {
+        if (err) *err = "cannot create " + pdir;
+        return false;
+    }
+    const std::string path = pdir + "/" + sanitize(r.name);
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) {
+        if (err) *err = "cannot write " + path;
+        return false;
+    }
+    f << r.type << "\n";
+    for (const auto& a : r.args) f << a << "\n";
+    return f.good();
+}
+
+std::optional<PipeRecord> Store::load_pipe(const std::string& peer, const std::string& name) {
+    std::ifstream f(dir_ + "/pipes/" + sanitize(peer) + "/" + sanitize(name));
+    if (!f) return std::nullopt;
+    PipeRecord r;
+    r.peer = peer;
+    r.name = name;
+    if (!std::getline(f, r.type) || r.type.empty()) return std::nullopt;
+    std::string line;
+    while (std::getline(f, line)) r.args.push_back(line);
+    return r;
+}
+
+std::vector<PipeRecord> Store::list_pipes(const std::string& peer) {
+    std::vector<PipeRecord> out;
+    const std::string pdir = dir_ + "/pipes/" + sanitize(peer);
+    DIR* d = ::opendir(pdir.c_str());
+    if (!d) return out;
+    std::vector<std::string> names;
+    while (dirent* e = ::readdir(d)) {
+        std::string n = e->d_name;
+        if (!n.empty() && n[0] != '.') names.push_back(n);
+    }
+    ::closedir(d);
+    std::sort(names.begin(), names.end());
+    for (const auto& n : names)
+        if (auto r = load_pipe(peer, n)) out.push_back(*r);
+    return out;
+}
+
+bool Store::remove_pipe(const std::string& peer, const std::string& name) {
+    return std::remove((dir_ + "/pipes/" + sanitize(peer) + "/" + sanitize(name)).c_str()) == 0;
+}
+
+void Store::wipe_pipes() {
+    const std::string base = dir_ + "/pipes";
+    DIR* d = ::opendir(base.c_str());
+    if (!d) return;
+    while (dirent* e = ::readdir(d)) {
+        std::string peer = e->d_name;
+        if (peer.empty() || peer[0] == '.') continue;
+        const std::string pdir = base + "/" + peer;
+        if (DIR* pd = ::opendir(pdir.c_str())) {
+            while (dirent* pe = ::readdir(pd)) {
+                std::string n = pe->d_name;
+                if (!n.empty() && n[0] != '.') std::remove((pdir + "/" + n).c_str());
+            }
+            ::closedir(pd);
+        }
+        ::rmdir(pdir.c_str());
+    }
+    ::closedir(d);
+}
+
 bool Store::rename(const std::string& from, const std::string& to, std::string* err) {
     auto rec = load(from);
     if (!rec) {

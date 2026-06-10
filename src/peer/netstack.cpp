@@ -204,14 +204,14 @@ void Netstack::input(ByteSpan ip_packet) {
 void Netstack::check_timeouts() {
     sys_check_timeouts();
     if (netif_) netif_poll(netif_);  // process loopback queue
-    // Perform deferred closes here (off the lwIP callback path), then reap failed
-    // connect attempts so `spl send`'s retry loop doesn't accumulate dead conns.
+    // Perform deferred closes here (off the lwIP callback path), then reap conns
+    // whose pcb is gone (closed, errored, or failed connects) — a long-lived
+    // process would otherwise accumulate them forever.
     for (auto& c : conns_) c->poll_close();
-    conns_.erase(std::remove_if(conns_.begin(), conns_.end(),
-                                [](const std::unique_ptr<TcpConn>& c) {
-                                    return c->dead_unconnected();
-                                }),
-                 conns_.end());
+    conns_.erase(
+        std::remove_if(conns_.begin(), conns_.end(),
+                       [](const std::unique_ptr<TcpConn>& c) { return c->dead(); }),
+        conns_.end());
 }
 
 void Netstack::emit(pbuf* p) {

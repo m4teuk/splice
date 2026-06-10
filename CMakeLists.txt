@@ -106,6 +106,9 @@ add_library(spl_peer STATIC
   src/peer/datatest.cpp
   src/peer/netstack.cpp
   src/peer/runtime.cpp
+  src/peer/pipes.cpp
+  src/peer/daemon.cpp
+  src/peer/daemon_client.cpp
   src/peer/chat.cpp
   src/peer/xfer.cpp
   src/peer/peer_cmd.cpp
@@ -207,6 +210,10 @@ if(SPL_BUILD_TESTS)
     set_tests_properties(datapath_integration PROPERTIES TIMEOUT 120)
 
     # Full stack: pair, then a bidirectional `spl chat` pipe through the tunnel.
+    add_test(NAME daemon_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/daemon_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(daemon_integration PROPERTIES TIMEOUT 120)
+
     add_test(NAME chat_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)
     set_tests_properties(chat_integration PROPERTIES TIMEOUT 90)

@@ -58,7 +58,17 @@ UNREGISTER <peer> <pipe_id>                  -> OK | error
 OPEN       <peer> <peer_pipe_id> <type> <args…> -> <local_id> | error
 CLOSE      <peer> <local_id>                 -> OK | error   (forceful)
 STATUS                                       -> the state of everything
+RESET                                        -> drop every pipe (only `diagnostic` remains)
 ```
+
+**Registrations are durable.** A daemon-owned registration is a fact, recorded
+like pairings are: one file per pipe under `<config>/pipes/<peer>/<name>`. The
+daemon resolves incoming names against these files on demand, so a restarted
+daemon serves exactly what was registered before — register once on a server
+and it keeps working. `PIPE` registrations are the exception: their local end
+is a living process, so they exist only while that process holds its socket.
+Live instances are never persisted. `RESET` wipes the stored registrations,
+drops live ones, and kills running instances.
 
 - `REGISTER` makes a named pipe available to `<peer>` (and only that peer).
 - `OPEN` connects to a pipe the peer has registered; `<type> <args…>` describe
@@ -95,10 +105,13 @@ kernel, API, and wire format never change.
 
 | type | input | output |
 |---|---|---|
-| `PONG` | anything | a copy of the input (diagnostics) |
+| `ECHO` | anything | a copy of the input (diagnostics) |
 | `SHARE_FILE <path>` | ignored | the file's content, like a symlink to the bytes |
 | `GET_FILE <path>` | written to `<path>` | nothing |
 | `PIPE` | from the creating process | to the creating process |
+
+Every peer implicitly has `diagnostic` (an `ECHO`): it is not stored, cannot be
+unregistered, and survives `RESET`.
 
 `PIPE` is the escape hatch to the outside world: the unix-socket connection
 that issued the `REGISTER`/`OPEN` itself becomes the byte stream after the
@@ -143,7 +156,7 @@ direct, RTT, liveness — the path manager's snapshot), then the pipes:
 ```
 PEER alice:                          direct 3ms (relay fallback armed)
   LISTENING
-    diagnostic  PONG                                      (12 finished, 0 active)
+    diagnostic  ECHO                                      (12 finished, 0 active)
     mypdf       SHARE_FILE /home/user/file_to_share.pdf   (0 finished, 1 active)
       #1          sending 48% (2.4/5.1 MB)
     chat        PIPE                                      (1 finished, 0 active)
@@ -152,7 +165,7 @@ PEER alice:                          direct 3ms (relay fallback armed)
 
 PEER bob:                            unreachable (last seen 2d ago)
   LISTENING
-    diagnostic  PONG                                      (0 finished, 0 active)
+    diagnostic  ECHO                                      (0 finished, 0 active)
 ```
 
 Instance ids (`#0`, `#1`, …) are unique per peer across both sections, so

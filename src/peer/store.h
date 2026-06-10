@@ -23,6 +23,17 @@ struct ConnRecord {
     int64_t created_unix = 0;
 };
 
+// A persistent named pipe registration (daemon-owned types only; PIPE
+// registrations live and die with their owning process). One file per pipe
+// under <config>/pipes/<peer>/<name>: first line the type, then one arg per
+// line (args may contain spaces).
+struct PipeRecord {
+    std::string peer;
+    std::string name;
+    std::string type;
+    std::vector<std::string> args;
+};
+
 class Store {
  public:
     static std::optional<Store> open(std::string* err);
@@ -35,6 +46,13 @@ class Store {
     bool exists(const std::string& name);
     bool rename(const std::string& from, const std::string& to, std::string* err);
     bool remove(const std::string& name);  // true if a record was removed
+
+    // Persistent pipe registrations.
+    bool save_pipe(const PipeRecord& r, std::string* err);
+    std::optional<PipeRecord> load_pipe(const std::string& peer, const std::string& name);
+    std::vector<PipeRecord> list_pipes(const std::string& peer);  // sorted by name
+    bool remove_pipe(const std::string& peer, const std::string& name);
+    void wipe_pipes();  // all pipes for all peers (reset)
 
     const std::string& dir() const { return dir_; }
 
