@@ -58,9 +58,11 @@ int chat_main(int argc, char** argv) {
     }
 
     const bool leader = !rec->side;
-    // The follower WAITs: the leader's chat may not be registered yet (whoever
-    // starts first just sits until the other side shows up).
-    const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat PIPE"
+    // chat is a 1:1 session: the host registers with LIMIT 1, so the single
+    // conversation ending — from EITHER side — retires the registration and
+    // closes the host's socket too, and both `spl chat` processes exit. The
+    // follower WAITs so it can start before the host is registered.
+    const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat LIMIT 1 PIPE"
                                     : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
     clog("%s chat with %s...", leader ? "hosting" : "joining", name.c_str());
     const std::string r = send_command(fd, verb);

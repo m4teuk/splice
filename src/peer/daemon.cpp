@@ -82,8 +82,17 @@ struct Instance {
 
 // A live PIPE registration: a client process's socket waiting for connections.
 // (Daemon-owned types — ECHO, files — persist in the Store instead.)
+//
+// LIMIT N caps the registration at N instances over its lifetime ("N-shot"):
+// further connections are refused, and once N instances have been spawned and
+// all have finished the registration is retired (owner socket closed). chat uses
+// LIMIT 1 — exactly one conversation, and when it ends from *either* side the
+// host's owner socket closes too, so `spl chat` exits symmetrically. limit 0 =
+// unlimited (a plain host that serves until its owner process closes).
 struct PipeReg {
     int owner_fd = -1;
+    uint32_t limit = 0;    // 0 = unlimited
+    uint32_t started = 0;  // instances spawned so far (never decremented)
 };
 
 struct Session {
@@ -99,6 +108,9 @@ struct Session {
     // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
     // end must never be destroyed while one of its own methods is on the stack.
     std::vector<uint64_t> want_close;
+    // PIPE registrations to retire (LIMIT reached + drained). Deferred to tick()
+    // to avoid unregistering mid-callback.
+    std::vector<std::string> want_retire;
 };
 
 class Daemon {
@@ -117,6 +129,7 @@ class Daemon {
     void dial(Session& s, Instance& in, Millis now);
     void route_to_tunnel(Session& s, Instance& in, ByteSpan b);
     void close_instance(Session& s, uint64_t id, bool finished);
+    size_t live_instances(Session& s, const std::string& name);
     void watch_cfd(Session& s, Instance& in);
     void close_reg_instances(Session& s, const std::string& name);
     void unregister_pipe(Session& s, const std::string& name);
@@ -267,8 +280,17 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                 in.type = "ECHO";
                 in.local = make_local_end("ECHO", {}, nullptr);
             } else if (auto pit = s.pipe_regs.find(line); pit != s.pipe_regs.end()) {
+                PipeReg& reg = pit->second;
+                if (reg.limit && reg.started >= reg.limit) {  // N-shot quota reached
+                    spl::logf("[daemon] %s requested '%s' -> UNKNOWN (limit %u reached)",
+                              s.name.c_str(), line.c_str(), reg.limit);
+                    in.conn->send(as_span(std::string("UNKNOWN\n")));
+                    close_instance(s, id, false);
+                    return;
+                }
+                ++reg.started;
                 in.type = "PIPE";
-                in.cfd = pit->second.owner_fd;  // shared with the registration
+                in.cfd = reg.owner_fd;  // shared with the registration
             } else if (auto rec = store_ ? store_->load_pipe(s.name, line) : std::nullopt) {
                 in.type = rec->type;
                 in.local = make_local_end(rec->type, rec->args, nullptr);
@@ -396,10 +418,29 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         in.conn->close();
     }
     if (in.inbound && finished) ++s.finished[in.reg];
+    const std::string reg = in.reg;
+    const bool inbound = in.inbound;
     spl::logf("[daemon] #%llu closed (%s, up %s down %s)", (unsigned long long)id,
               finished ? "done" : "aborted", human_bytes(in.up).c_str(),
               human_bytes(in.down).c_str());
     s.insts.erase(it);
+
+    // An N-shot PIPE registration that has spawned its quota and now has no live
+    // instances left is done: retire it (closes the owner socket, so a chat host
+    // exits when the conversation ends). Deferred to tick() to avoid re-entrancy.
+    if (inbound) {
+        auto rit = s.pipe_regs.find(reg);
+        if (rit != s.pipe_regs.end() && rit->second.limit &&
+            rit->second.started >= rit->second.limit && live_instances(s, reg) == 0)
+            s.want_retire.push_back(reg);
+    }
+}
+
+size_t Daemon::live_instances(Session& s, const std::string& name) {
+    size_t n = 0;
+    for (auto& [id, in] : s.insts)
+        if (in->inbound && in->reg == name) ++n;
+    return n;
 }
 
 void Daemon::close_reg_instances(Session& s, const std::string& name) {
@@ -426,6 +467,9 @@ void Daemon::tick(Millis now) {
         for (size_t i = 0; i < s.want_close.size(); ++i)  // ends may queue more
             close_instance(s, s.want_close[i], true);
         s.want_close.clear();
+
+        for (const auto& reg : s.want_retire) unregister_pipe(s, reg);
+        s.want_retire.clear();
 
         std::vector<uint64_t> expired;
         for (auto& [id, inp] : s.insts) {
@@ -530,7 +574,9 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     }
 
     if (cmd == "REGISTER") {
-        if (t.size() < 4) return reply_close("ERR usage: REGISTER <peer> <id> <TYPE> [args]\n");
+        // REGISTER <peer> <id> [LIMIT <n>] <TYPE> [args]
+        if (t.size() < 4)
+            return reply_close("ERR usage: REGISTER <peer> <id> [LIMIT <n>] <TYPE> [args]\n");
         std::string err;
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
@@ -540,14 +586,27 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
                            (store_ && store_->load_pipe(s->name, name).has_value());
         if (taken) return reply_close("ERR pipe '" + name + "' already exists\n");
 
-        const std::string& type = t[3];
-        std::vector<std::string> args(t.begin() + 4, t.end());
+        size_t ti = 3;
+        uint32_t limit = 0;
+        if (t.size() > ti && t[ti] == "LIMIT") {
+            if (t.size() <= ti + 1) return reply_close("ERR LIMIT needs a count\n");
+            limit = static_cast<uint32_t>(std::strtoul(t[ti + 1].c_str(), nullptr, 10));
+            if (limit == 0) return reply_close("ERR LIMIT must be >= 1\n");
+            ti += 2;
+        }
+        if (t.size() <= ti) return reply_close("ERR REGISTER needs a TYPE\n");
+        const std::string& type = t[ti];
+        std::vector<std::string> args(t.begin() + ti + 1, t.end());
+        // LIMIT retires the registration when drained, so it only makes sense for
+        // a live (PIPE) host, not a persistent daemon-owned service.
+        if (limit && type != "PIPE")
+            return reply_close("ERR LIMIT is only supported for PIPE registrations\n");
         if (type == "PIPE") {
             if (!args.empty()) return reply_close("ERR PIPE takes no arguments\n");
             write_str(fd, "OK\n");
             poller_.remove(fd);
             ctl_.erase(fd);  // the connection now is the pipe's local end
-            s->pipe_regs[name] = PipeReg{fd};
+            s->pipe_regs[name] = PipeReg{fd, limit, 0};
             Session* sp = s;
             poller_.set(fd, [this, sp, name, fd] {
                 // Bytes from the owner go to every active instance of this pipe

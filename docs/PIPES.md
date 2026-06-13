@@ -52,13 +52,22 @@ to the daemon over a per-user unix socket (`$XDG_RUNTIME_DIR/spl/daemon.sock`,
 no root anywhere). The verbs:
 
 ```
-REGISTER   <peer> <pipe_id> <type> <args…>   -> OK | error (e.g. name collision)
+REGISTER   <peer> <pipe_id> [LIMIT <n>] <type> <args…> -> OK | error (e.g. collision)
 UNREGISTER <peer> <pipe_id>                  -> OK | error
-OPEN       <peer> <peer_pipe_id> <type> <args…> -> <local_id> | error
+OPEN       <peer> <peer_pipe_id> [WAIT] <type> <args…> -> <local_id> | error
 CLOSE      <peer> <local_id>                 -> OK | error   (forceful)
 STATUS                                       -> the state of everything
 RESET                                        -> drop every pipe (only `diagnostic` remains)
 ```
+
+`LIMIT <n>` makes a registration **N-shot**: it serves at most `n` instances over
+its lifetime (further connections are refused), and once `n` have been spawned
+and all have finished the registration is retired — for a `PIPE`, that closes the
+owner's socket, so the host process exits too. This is how a session ends
+symmetrically: `chat` registers with `LIMIT 1`, so the single conversation
+closing from *either* side tears down both ends. `LIMIT` only applies to `PIPE`
+registrations (a persistent daemon-owned service is never auto-retired). Without
+`LIMIT` a registration serves connections indefinitely until explicitly removed.
 
 (Plus three housekeeping verbs: `PING` -> `OK` (aliveness, used by auto-start),
 `STOP` (shut the daemon down), and `FORCE_RELAY <peer> <0|1>` — a debug/test

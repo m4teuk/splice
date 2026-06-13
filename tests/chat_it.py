@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-end chat test on the daemon: leader hosts a `chat` PIPE, follower
-opens it, messages flow both ways, follower hanging up closes its end.
+"""Chat is a 1:1 session (host registers `chat` LIMIT 1). Verify messages flow
+both ways and that hanging up from EITHER side tears the whole session down, and
+that it works regardless of which side starts first.
 
 Usage: chat_it.py /path/to/spl
 """
@@ -14,6 +15,7 @@ import time
 from itlib import free_port, pair_two, start_server, stop
 
 SPL = sys.argv[1]
+ARGS = []  # filled in with --server/--port
 
 
 def read_until(stream, needle, timeout):
@@ -32,73 +34,78 @@ def read_until(stream, needle, timeout):
     return got[0]
 
 
+def chat(env, peer):
+    return subprocess.Popen(
+        [SPL, "chat", peer, *ARGS],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env,
+    )
+
+
+def exited(p, timeout):
+    try:
+        p.wait(timeout)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def main():
+    global ARGS
     port = free_port()
     srv = start_server(SPL, port)
-    leader = follower = None
+    procs = []
     lenv = fenv = None
     try:
         ld, fd = pair_two(SPL, port)
         lenv = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=tempfile.mkdtemp())
         fenv = dict(os.environ, SPL_CONFIG_DIR=fd, SPL_RUNTIME_DIR=tempfile.mkdtemp())
-        args = ["--server", "127.0.0.1", "--port", str(port)]
+        ARGS = ["--server", "127.0.0.1", "--port", str(port)]
 
-        # leader (side 0) hosts; follower (side 1) opens.
-        leader = subprocess.Popen(
-            [SPL, "chat", "thefollower", *args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=lenv,
-        )
+        # --- round 1: leader first, follower hangs up -> both exit ---
+        leader = chat(lenv, "thefollower"); procs.append(leader)
         time.sleep(0.8)
-        follower = subprocess.Popen(
-            [SPL, "chat", "theleader", *args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=fenv,
-        )
+        follower = chat(fenv, "theleader"); procs.append(follower)
         time.sleep(0.6)
 
-        # follower -> leader
-        follower.stdin.write(b"hello from the follower\n")
-        follower.stdin.flush()
-        out = read_until(leader.stdout, b"hello from the follower\n", 20)
-        assert b"hello from the follower\n" in out, f"leader received {out!r}"
-        print("  follower -> leader OK")
+        follower.stdin.write(b"hello from the follower\n"); follower.stdin.flush()
+        assert b"hello from the follower\n" in read_until(leader.stdout, b"hello from the follower\n", 20)
+        leader.stdin.write(b"hi back\n"); leader.stdin.flush()
+        assert b"hi back\n" in read_until(follower.stdout, b"hi back\n", 20)
+        print("  messages flow both ways")
 
-        # leader -> follower
-        leader.stdin.write(b"hi back\n")
-        leader.stdin.flush()
-        out = read_until(follower.stdout, b"hi back\n", 20)
-        assert b"hi back\n" in out, f"follower received {out!r}"
-        print("  leader -> follower OK")
-
-        # follower hangs up; its process exits, the leader keeps hosting.
         follower.stdin.close()
-        assert follower.wait(15) == 0, "follower did not exit after ^D"
-        assert leader.poll() is None, "leader exited when the follower hung up"
-        print("  hangup OK (leader keeps hosting)")
+        assert exited(follower, 15), "follower did not exit after its own ^D"
+        assert exited(leader, 15), "leader did not exit when the follower hung up (LIMIT 1)"
+        print("  follower ^D tore down both sides")
 
-        # leader ^D ends hosting.
+        # --- round 2: leader hangs up -> both exit (fresh session) ---
+        leader = chat(lenv, "thefollower"); procs.append(leader)
+        time.sleep(0.8)
+        follower = chat(fenv, "theleader"); procs.append(follower)
+        time.sleep(0.6)
+        follower.stdin.write(b"ping\n"); follower.stdin.flush()
+        assert b"ping\n" in read_until(leader.stdout, b"ping\n", 20)
+
         leader.stdin.close()
-        assert leader.wait(15) == 0, "leader did not exit after ^D"
+        assert exited(leader, 15), "leader did not exit after its own ^D"
+        assert exited(follower, 15), "follower did not exit when the leader hung up"
+        print("  leader ^D tore down both sides")
 
-        # follower-first: the follower WAITs until the leader shows up.
-        follower = subprocess.Popen(
-            [SPL, "chat", "theleader", *args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=fenv,
-        )
+        # --- round 3: follower starts first (WAITs for the host) ---
+        follower = chat(fenv, "theleader"); procs.append(follower)
         time.sleep(1.5)
-        assert follower.poll() is None, "follower gave up before the leader joined"
-        leader = subprocess.Popen(
-            [SPL, "chat", "thefollower", *args],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=lenv,
-        )
-        follower.stdin.write(b"second round\n")
-        follower.stdin.flush()
-        out = read_until(leader.stdout, b"second round\n", 20)
-        assert b"second round\n" in out, f"leader received {out!r}"
-        print("  follower-first OK (waited for the leader)")
+        assert follower.poll() is None, "follower gave up before the host appeared"
+        leader = chat(lenv, "thefollower"); procs.append(leader)
+        follower.stdin.write(b"second round\n"); follower.stdin.flush()
+        assert b"second round\n" in read_until(leader.stdout, b"second round\n", 20)
+        print("  follower-first OK (waited for the host)")
+
+        leader.stdin.close()
+        assert exited(leader, 15) and exited(follower, 15), "follower-first session did not tear down"
         print("CHAT E2E PASSED")
     finally:
-        stop(follower)
-        stop(leader)
+        for p in procs:
+            stop(p)
         for env in (lenv, fenv):
             if env:
                 subprocess.run([SPL, "peer", "stop"], env=env,
