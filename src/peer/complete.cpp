@@ -122,6 +122,18 @@ std::vector<std::string> instance_ids(const std::string& peer) {
     return ids;
 }
 
+// Remote pipe names the peer serves us (the LIST verb). Bounded so TAB stays
+// snappy; empty if the daemon isn't running or the peer doesn't answer in time.
+std::vector<std::string> remote_pipes(const std::string& peer) {
+    if (peer.empty()) return {};
+    std::vector<std::string> names;
+    std::istringstream is(daemon_list(peer, 1200));
+    std::string line;
+    while (std::getline(is, line))
+        if (!line.empty()) names.push_back(line);
+    return names;
+}
+
 // Candidates for the n-th positional slot of `cmd`. `pos` holds the positional
 // words already typed (so e.g. pos[0] is the peer when completing a later slot).
 std::vector<std::string> positional(const std::string& cmd, size_t idx,
@@ -134,9 +146,10 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
         return {};
     };
     if (cmd == "serve") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};
-    if (cmd == "get") return idx == 0 ? peer() : std::vector<std::string>{};  // idx1: remote pipe (LIST later)
+    if (cmd == "get") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "chat" || cmd == "remove" || cmd == "rm") return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "rename") return idx == 0 ? peer() : std::vector<std::string>{};
+    if (cmd == "ls" || cmd == "list") return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "register") {
@@ -147,7 +160,7 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     }
     if (cmd == "open") {
         if (idx == 0) return peer();
-        if (idx == 1) return {};       // remote pipe (LIST later)
+        if (idx == 1) return remote_pipes(pos.empty() ? "" : pos[0]);  // remote pipe
         if (idx == 2) return kTypes;   // local TYPE
         return type_args(2);
     }

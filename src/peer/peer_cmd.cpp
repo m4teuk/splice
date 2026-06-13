@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <ctime>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -171,6 +172,26 @@ std::string join(const std::vector<std::string>& v, size_t from) {
     return s;
 }
 
+// `spl ls <peer>`: ask that peer (via the daemon's LIST verb) what it serves us.
+int do_list_remote(int argc, char** argv, const std::string& peer) {
+    std::string err;
+    if (!ensure_daemon(daemon_opts_from(argc, argv), &err)) {
+        spl::logf("spl ls: %s", err.c_str());
+        return 1;
+    }
+    const std::string body = daemon_list(peer, 4500);
+    if (body.empty()) {
+        std::printf("%s offers no pipes (or is unreachable).\n", peer.c_str());
+        return 0;
+    }
+    std::printf("%s offers:\n", peer.c_str());
+    std::string line;
+    std::istringstream is(body);
+    while (std::getline(is, line))
+        if (!line.empty()) std::printf("  %s\n", line.c_str());
+    return 0;
+}
+
 int do_list() {
     std::string err;
     auto store = Store::open(&err);
@@ -235,7 +256,10 @@ int peer_cmd_main(int argc, char** argv) {
         return 2;
     }
     std::string sub = argv[1];
-    if (sub == "list" || sub == "ls") return do_list();
+    if (sub == "list" || sub == "ls") {
+        const auto a = plain_args(argc, argv);
+        return a.empty() ? do_list() : do_list_remote(argc, argv, a[0]);
+    }
     if (sub == "rename") {
         if (argc < 4) {
             usage();

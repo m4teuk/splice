@@ -83,6 +83,23 @@ std::string daemon_request(const std::string& line) {
     return r;
 }
 
+std::string daemon_list(const std::string& peer, int timeout_ms) {
+    int fd = daemon_connect();
+    if (fd < 0) return "";
+    struct timeval tv {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    const std::string cmd = "LIST " + peer + "\n";
+    write_all(fd, cmd.data(), cmd.size());
+    std::string body, buf(4096, '\0');
+    for (;;) {
+        ssize_t n = ::read(fd, buf.data(), buf.size());
+        if (n <= 0) break;  // EOF or timeout
+        body.append(buf.data(), static_cast<size_t>(n));
+    }
+    ::close(fd);
+    return body;
+}
+
 bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
 #ifndef SPL_GIT_SHA
 #define SPL_GIT_SHA "unknown"

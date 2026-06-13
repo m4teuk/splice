@@ -27,6 +27,11 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err);
 // PIPE-typed commands whose connection becomes the byte stream).
 std::string send_command(int fd, const std::string& line);
 
+// Ask the running daemon what `peer` serves us (the LIST verb). Returns the raw
+// reply (newline-separated pipe names), or "" if no daemon / timeout. Never
+// starts the daemon. `timeout_ms` bounds the wait so completion stays snappy.
+std::string daemon_list(const std::string& peer, int timeout_ms);
+
 // Pump stdin -> fd and fd -> stdout until the daemon side closes (or SIGINT).
 // On stdin EOF: keep receiving (default), or return — closing the pipe — when
 // exit_on_stdin_eof is set (chat semantics). Returns an exit code.

@@ -62,6 +62,29 @@ std::vector<std::string> split_ws(const std::string& line) {
     return out;
 }
 
+// Collector for an outbound __LIST__ meta-request: buffers the peer's reply
+// (newline-separated pipe names) and, when the request ends, writes it to the
+// waiting control-socket client and closes it. The destructor does the flush so
+// it fires on success, timeout, or abort alike.
+struct ListEnd : LocalEnd {
+    int client_fd;
+    std::string buf;
+    explicit ListEnd(int fd) : client_fd(fd) {}
+    ~ListEnd() override {
+        if (client_fd < 0) return;
+        for (size_t off = 0; off < buf.size();) {
+            ssize_t w = ::write(client_fd, buf.data() + off, buf.size() - off);
+            if (w <= 0) break;
+            off += static_cast<size_t>(w);
+        }
+        ::close(client_fd);
+    }
+    void on_tunnel_data(ByteSpan b) override {
+        buf.append(reinterpret_cast<const char*>(b.data()), b.size());
+    }
+    std::string describe() const override { return "list"; }
+};
+
 // One live spliced connection (an instance of a pipe pair).
 struct Instance {
     uint64_t id = 0;
@@ -80,6 +103,7 @@ struct Instance {
     Millis next_dial = 0, dial_deadline = 0;
     bool dialing = false;
     bool wait = false;  // OPEN WAIT: UNKNOWN means "not yet" — re-dial until closed
+    bool meta = false;  // a __LIST__ request: no OK handshake; bind on connect
 };
 
 // A live PIPE registration: a client process's socket waiting for connections.
@@ -279,6 +303,16 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
         in.lbuf.clear();
 
         if (in.inbound) {
+            // Meta-request: reply with the names we serve this peer, then close.
+            if (line == "__LIST__") {
+                std::string names;
+                if (store_)
+                    for (const auto& r : store_->list_pipes(s.name)) names += r.name + "\n";
+                for (const auto& [rname, reg] : s.pipe_regs) names += rname + "\n";
+                in.conn->send(as_span(names));
+                close_instance(s, id, false);
+                return;
+            }
             // Resolve the requested name: live PIPE registrations, then the
             // persistent registrations on disk.
             in.reg = line;
@@ -370,6 +404,12 @@ void Daemon::dial(Session& s, Instance& in, Millis now) {
             c->on_closed = [this, sp, id] { on_tunnel_gone(*sp, id); };
             c->on_error = [this, sp, id] { on_tunnel_gone(*sp, id); };
             c->send(as_span(ip->want + "\n"));
+            // A meta-request gets no OK handshake: the reply bytes follow
+            // immediately, so bind the collector now.
+            if (ip->meta) {
+                ip->open = true;
+                bind_end(*sp, *ip);
+            }
             spl::logf("[daemon] #%llu connected to %s, requested '%s'", (unsigned long long)id,
                       sname.c_str(), ip->want.c_str());
         },
@@ -701,6 +741,33 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             write_str(fd, "OK " + std::to_string(in->id) + "\n");
             drop_ctl(fd, true);
         }
+        const uint64_t id = in->id;
+        s->insts[id] = std::move(in);
+        dial(*s, *s->insts[id], now);
+        return;
+    }
+
+    if (cmd == "LIST") {
+        // Ask the peer what it serves us; the reply (names, one per line) is
+        // streamed raw to this control connection, which the ListEnd then closes.
+        if (t.size() != 2) return reply_close("ERR usage: LIST <peer>\n");
+        std::string err;
+        Session* s = session_for(t[1], &err);
+        if (!s) {  // unknown peer -> empty result (close with no body)
+            drop_ctl(fd, true);
+            return;
+        }
+        auto in = std::make_unique<Instance>();
+        in->id = s->next_id++;
+        in->want = "__LIST__";
+        in->type = "list";
+        in->meta = true;
+        in->local = std::make_unique<ListEnd>(fd);  // owns the control fd now
+        const Millis now = mono_ms();
+        in->dial_deadline = now + 4000;  // give up (empty) if the peer is unreachable
+        in->next_dial = now;
+        poller_.remove(fd);
+        ctl_.erase(fd);
         const uint64_t id = in->id;
         s->insts[id] = std::move(in);
         dial(*s, *s->insts[id], now);

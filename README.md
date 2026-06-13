@@ -139,7 +139,8 @@ spl chat laptop                    # talk: a terminal on each end of a pipe
 spl status [-v]                    # all peers: path (direct/relay), pipes, progress
                                    #   -v adds addresses, per-path bytes, candidate table
 spl start | stop | reset           # daemon lifecycle (auto-started otherwise)
-spl ls | rename | remove           # manage paired connections
+spl ls                             # list paired peers; `spl ls <peer>` = what they serve you
+spl rename | remove                # manage paired connections
 spl register | open | close        # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
 ```
 

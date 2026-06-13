@@ -71,6 +71,22 @@ def main():
         assert "echo" in mine, mine
         print("  unregister pipe-name OK")
 
+        # remote pipe completion for `get` (the LIST verb): the follower serves
+        # 'echo'; from the leader, `get thefollower <TAB>` should offer it.
+        for _ in range(20):
+            rp = comp(lenv, 3, "spl", "get", "thefollower")
+            if "echo" in rp:
+                break
+            time.sleep(0.3)
+        assert "echo" in rp, f"remote pipe completion: {rp}"
+        print("  remote-pipe completion OK (LIST)")
+
+        # `spl ls <peer>` shows the peer's offered pipes
+        r = subprocess.run([SPL, "ls", "thefollower", *A], env=lenv,
+                           capture_output=True, text=True, timeout=15)
+        assert "echo" in r.stdout, f"ls <peer>: {r.stdout}"
+        print("  ls <peer> OK")
+
         # bash wrapper actually drives it
         bashrc = os.path.join(os.path.dirname(__file__), "..", "completions", "spl.bash")
         script = f'''

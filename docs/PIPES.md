@@ -115,6 +115,12 @@ Two-word vocabulary, by design. There is no BUSY, no error detail: if a pipe
 wants to refuse, negotiate, or report, it does so in-band in its own protocol
 after `OK`.
 
+One meta-request rides the same channel: a connection whose first line is
+`__LIST__` gets back the newline-separated names this peer serves the caller
+(then the connection closes). It's how `spl ls <peer>` and remote-pipe TAB
+completion discover what's available — introspection built from the same
+handshake, no special socket.
+
 ## Pipe types
 
 The initial catalogue. Adding a type touches only the catalogue — the daemon
