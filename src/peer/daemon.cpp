@@ -18,6 +18,7 @@
 
 #include "common/base64.h"
 #include "common/config.h"
+#include "common/io.h"
 #include "common/log.h"
 #include "common/time.h"
 #include "net/poller.h"
@@ -43,16 +44,7 @@ constexpr Millis kWarmMs = 5 * 60 * 1000;
 std::atomic<bool> g_dstop{false};
 void on_dsig(int) { g_dstop.store(true); }
 
-void write_all(int fd, const void* p, size_t n) {
-    const uint8_t* b = static_cast<const uint8_t*>(p);
-    size_t off = 0;
-    while (off < n) {
-        ssize_t w = ::write(fd, b + off, n - off);
-        if (w <= 0) return;
-        off += static_cast<size_t>(w);
-    }
-}
-void write_str(int fd, const std::string& s) { write_all(fd, s.data(), s.size()); }
+void write_str(int fd, const std::string& s) { spl::write_all(fd, s.data(), s.size()); }
 
 std::vector<std::string> split_ws(const std::string& line) {
     std::vector<std::string> out;
@@ -72,11 +64,7 @@ struct ListEnd : LocalEnd {
     explicit ListEnd(int fd) : client_fd(fd) {}
     ~ListEnd() override {
         if (client_fd < 0) return;
-        for (size_t off = 0; off < buf.size();) {
-            ssize_t w = ::write(client_fd, buf.data() + off, buf.size() - off);
-            if (w <= 0) break;
-            off += static_cast<size_t>(w);
-        }
+        spl::write_all(client_fd, buf.data(), buf.size());
         ::close(client_fd);
     }
     void on_tunnel_data(ByteSpan b) override {
@@ -372,7 +360,7 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
     if (in.local) {
         in.local->on_tunnel_data(b);
     } else if (in.cfd >= 0) {
-        write_all(in.cfd, b.data(), b.size());
+        spl::write_all(in.cfd, b.data(), b.size());
     }
 }
 

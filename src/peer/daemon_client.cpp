@@ -8,8 +8,10 @@
 #include <cstdarg>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
+#include "common/io.h"
 #include "common/log.h"
 #include "common/time.h"
 
@@ -27,16 +29,6 @@ void clog(const char* fmt, ...) {
 
 namespace {
 
-void write_all(int fd, const void* p, size_t n) {
-    const uint8_t* b = static_cast<const uint8_t*>(p);
-    size_t off = 0;
-    while (off < n) {
-        ssize_t w = ::write(fd, b + off, n - off);
-        if (w <= 0) return;
-        off += static_cast<size_t>(w);
-    }
-}
-
 std::string read_line(int fd) {
     std::string out;
     char c;
@@ -50,6 +42,18 @@ std::string read_line(int fd) {
 }
 
 }  // namespace
+
+void apply_daemon_opts(int argc, char** argv, int start, DaemonOpts& o) {
+    for (int i = start; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--server" && i + 1 < argc) o.server = argv[++i];
+        else if (a == "--port" && i + 1 < argc) o.port = static_cast<uint16_t>(std::atoi(argv[++i]));
+    }
+}
+
+void daemon_fail(const char* ctx, const std::string& reply) {
+    spl::logf("%s: %s", ctx, reply.empty() ? "no reply from daemon" : reply.c_str());
+}
 
 int daemon_connect() {
     const std::string path = daemon_socket_path();
@@ -71,7 +75,7 @@ int daemon_connect() {
 
 std::string send_command(int fd, const std::string& line) {
     const std::string out = line + "\n";
-    write_all(fd, out.data(), out.size());
+    spl::write_all(fd, out.data(), out.size());
     return read_line(fd);
 }
 
@@ -89,7 +93,7 @@ std::string daemon_list(const std::string& peer, int timeout_ms) {
     struct timeval tv {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     const std::string cmd = "LIST " + peer + "\n";
-    write_all(fd, cmd.data(), cmd.size());
+    spl::write_all(fd, cmd.data(), cmd.size());
     std::string body, buf(4096, '\0');
     for (;;) {
         ssize_t n = ::read(fd, buf.data(), buf.size());
@@ -169,7 +173,7 @@ int bridge_stdio(int fd, bool exit_on_stdin_eof) {
             char buf[4096];
             ssize_t r = ::read(fd, buf, sizeof(buf));
             if (r <= 0) return 0;  // pipe closed by the other side
-            write_all(STDOUT_FILENO, buf, static_cast<size_t>(r));
+            spl::write_all(STDOUT_FILENO, buf, static_cast<size_t>(r));
         }
         if (n == 2 && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
             char buf[4096];
@@ -178,7 +182,7 @@ int bridge_stdio(int fd, bool exit_on_stdin_eof) {
                 if (exit_on_stdin_eof) return 0;  // we hang up
                 stdin_open = false;               // keep draining the pipe side
             } else {
-                write_all(fd, buf, static_cast<size_t>(r));
+                spl::write_all(fd, buf, static_cast<size_t>(r));
             }
         }
     }

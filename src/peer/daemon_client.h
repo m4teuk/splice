@@ -13,6 +13,15 @@ namespace spl::peer {
 // stderr is a TTY, plain otherwise (so logs/pipes stay clean). printf-style.
 void clog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+// Scan argv (from index `start`) for --server/--port and apply them to `o`.
+void apply_daemon_opts(int argc, char** argv, int start, DaemonOpts& o);
+
+// A daemon reply starting with "OK" is success ("OK" or "OK <body>").
+inline bool ok_reply(const std::string& r) { return r.rfind("OK", 0) == 0; }
+
+// Log a daemon failure uniformly: `<ctx>: <reply, or "no reply from daemon">`.
+void daemon_fail(const char* ctx, const std::string& reply);
+
 // Connect to the daemon socket; -1 if it isn't running.
 int daemon_connect();
 

@@ -66,8 +66,8 @@ int chat_main(int argc, char** argv) {
                                     : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
     clog("%s chat with %s...", leader ? "hosting" : "joining", name.c_str());
     const std::string r = send_command(fd, verb);
-    if (r.rfind("OK", 0) != 0) {
-        spl::logf("spl chat: %s", r.empty() ? "no reply from daemon" : r.c_str());
+    if (!ok_reply(r)) {
+        daemon_fail("spl chat", r);
         ::close(fd);
         return 1;
     }

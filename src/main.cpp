@@ -11,6 +11,7 @@
 
 #include "native/native.h"
 #include "peer/chat.h"
+#include "peer/commands.h"
 #include "peer/complete.h"
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
@@ -94,14 +95,7 @@ int main(int argc, char** argv) {
 
     // `spl peer <sub>` and the promoted top-level forms `spl <sub>` are the same
     // commands — the `peer` keyword is an accepted-but-optional prefix.
-    static constexpr const char* kPeerSubs[] = {
-        "start", "stop",       "reset",  "register", "unregister", "open",
-        "close", "ls",         "list",   "rename",   "remove",     "rm",
-        "add",   "status"};
-    bool is_peer_sub = false;
-    for (const char* s : kPeerSubs)
-        if (cmd == s) is_peer_sub = true;
-    if (cmd == "peer" || is_peer_sub) {
+    if (cmd == "peer" || spl::peer::is_peer_subcommand(cmd)) {
         // Hand peer_cmd_main an argv that always starts with "peer" so its own
         // dispatch is uniform, whether or not the user typed the keyword.
         std::vector<char*> a;

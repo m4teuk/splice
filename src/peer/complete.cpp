@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "peer/commands.h"
 #include "peer/daemon_client.h"
 #include "peer/store.h"
 
@@ -24,10 +25,14 @@ void emit(const std::vector<std::string>& cands) {
     for (const auto& c : cands) std::printf("%s\n", c.c_str());
 }
 
-const std::vector<std::string> kCommands = {
-    "server",   "pair",   "status", "serve",      "get",  "chat", "start",
-    "stop",     "reset",  "register", "unregister", "open", "close", "ls",
-    "rename",   "remove", "add",    "peer"};
+// The completable commands: every non-alias command, plus the `peer` prefix.
+std::vector<std::string> command_names() {
+    std::vector<std::string> v;
+    for (const auto& c : kCommands)
+        if (!c.alias) v.emplace_back(c.name);
+    v.emplace_back("peer");
+    return v;
+}
 const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "PIPE"};
 
 // Per-command flags. Value-flags consume the following word.
@@ -183,7 +188,7 @@ int complete_main(int argc, char** argv) {
     }
 
     if (cword <= 1) {  // completing the command itself
-        emit(kCommands);
+        emit(command_names());
         return 0;
     }
     const std::string cmd = words.size() > 1 ? words[1] : "";

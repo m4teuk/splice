@@ -13,7 +13,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -119,8 +118,8 @@ int serve_main(int argc, char** argv) {
     clog("registering '%s' (SHARE_FILE %s) for %s...", name.c_str(), path.c_str(), peer.c_str());
     const std::string r = daemon_request("REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) +
                                          " SHARE_FILE " + ctl_encode(path));
-    if (r != "OK") {
-        spl::logf("spl serve: %s", r.empty() ? "no reply from daemon" : r.c_str());
+    if (!ok_reply(r)) {
+        daemon_fail("spl serve", r);
         return 1;
     }
     clog("registered; the daemon serves this until `spl peer unregister %s %s`", peer.c_str(),
@@ -152,8 +151,8 @@ int get_main(int argc, char** argv) {
                            ctl_encode(target);
         if (o.overwrite) line += " OVERWRITE";
         const std::string r = daemon_request(line);
-        if (r.rfind("OK ", 0) != 0) {
-            spl::logf("spl get: %s", r.empty() ? "no reply from daemon" : r.c_str());
+        if (!ok_reply(r)) {
+            daemon_fail("spl get", r);
             return 1;
         }
         clog("started as instance #%s; watch it with `spl status`", r.substr(3).c_str());
@@ -171,8 +170,8 @@ int get_main(int argc, char** argv) {
     clog("opening '%s' on %s...", pipe.c_str(), peer.c_str());
     const std::string r =
         send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " PIPE");
-    if (r.rfind("OK", 0) != 0) {
-        spl::logf("spl get: %s", r.empty() ? "no reply from daemon" : r.c_str());
+    if (!ok_reply(r)) {
+        daemon_fail("spl get", r);
         ::close(fd);
         return 1;
     }

@@ -98,7 +98,6 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
     local_eps_ = net::local_interface_endpoints(net::local_port(udp_.get()));
 
     net::set_nonblocking(udp_.get(), true);
-    start_ = mono_ms();
     // No traffic until the owner marks us active (set_active): a dormant peer
     // session sits silent. The daemon registers the moment something listens or
     // a pipe runs.
@@ -193,7 +192,7 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         if (!r.ok() || tx != ping_txid_ || !from) return;
         if (DirectCand* c = find_cand(*from)) {
             c->last_rx = now;
-            Millis rtt = now - t_ping_;  // this token went out at t_ping_
+            Millis rtt = now - t_ping_.last;  // this token went out at the last ping
             if (rtt < 1) rtt = 1;
             c->srtt = c->srtt ? (c->srtt * 3 + rtt) / 4 : rtt;  // EWMA toward the latest sample
         }
@@ -304,34 +303,26 @@ void PathManager::tick(Millis now) {
     // is processed harmlessly. We just stop initiating traffic.
     if (!active_) return;
 
-    if (now - t_tick_ >= kTickMs) {
-        t_tick_ = now;
+    if (t_tick_.due(now, kTickMs)) {
         WgResult r = wg_.tick();
         if (r.op == WgOp::WriteToNetwork) send_wg(as_span(r.data));
     }
-    if (now - t_register_ >= kRegisterMs) {
-        t_register_ = now;
-        send_register();
-    }
+    if (t_register_.due(now, kRegisterMs)) send_register();
     // whereami: fast until our external address is known, then a slow refresh so
     // a NAT rebind / network change is noticed and re-advertised via CALLME.
-    const Millis whereami_iv = external_ ? kWhereamiRefreshMs : kWhereamiMs;
-    if (now - t_whereami_ >= whereami_iv) {
-        t_whereami_ = now;
+    if (t_whereami_.due(now, external_ ? kWhereamiRefreshMs : kWhereamiMs)) {
         spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_), sizeof(whereami_token_));
         Bytes q = proto::encode_whereami_req(whereami_token_);
         emit_udp(cfg_.server, as_span(q));
     }
-    if (external_ && !direct_confirmed_ && now - t_callme_ >= kCallmeMs) {
-        t_callme_ = now;
+    if (external_ && !direct_confirmed_ && t_callme_.due(now, kCallmeMs)) {
         Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
         send_payload(Path::Relay, nullptr, as_span(inner));
     }
     // Probe faster while no direct path is up (to get off the rate-limited
     // relay sooner), slower once one is established (keepalive + RTT refresh).
     const Millis ping_iv = direct_confirmed_ ? kPingKeepaliveMs : kPingProbeMs;
-    if (!force_relay_ && !cands_.empty() && now - t_ping_ >= ping_iv) {
-        t_ping_ = now;
+    if (!force_relay_ && !cands_.empty() && t_ping_.due(now, ping_iv)) {
         // Probe every candidate so each keeps a fresh RTT and choose_direct can
         // pick (and re-pick) the fastest reachable one.
         Bytes inner = build_inner(CH_DISCO, as_span(build_ping(++ping_txid_)));

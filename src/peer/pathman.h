@@ -39,6 +39,18 @@ namespace spl::peer {
 enum class Path { Relay, Direct };
 const char* path_name(Path p);
 
+// A periodic gate: due(now, interval) returns true at most once per interval and
+// stamps the time; rearm() makes the next due() fire immediately.
+struct Timer {
+    Millis last = 0;
+    bool due(Millis now, Millis interval) {
+        if (now - last < interval) return false;
+        last = now;
+        return true;
+    }
+    void rearm() { last = 0; }
+};
+
 struct PathConfig {
     proto::Uid uid;        // this side's uid (low bit = side)
     proto::WgKey own_priv;
@@ -88,7 +100,12 @@ class PathManager {
     // pipe listening/running or was active recently. A false->true edge re-arms
     // the timers so registration + probing fire on the very next tick.
     void set_active(bool a) {
-        if (a && !active_) t_register_ = t_whereami_ = t_callme_ = t_ping_ = 0;
+        if (a && !active_) {
+            t_register_.rearm();
+            t_whereami_.rearm();
+            t_callme_.rearm();
+            t_ping_.rearm();
+        }
         active_ = a;
     }
 
@@ -137,8 +154,7 @@ class PathManager {
 
     std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 
-    Millis start_ = 0;
-    Millis t_tick_ = 0, t_register_ = 0, t_whereami_ = 0, t_callme_ = 0, t_ping_ = 0;
+    Timer t_tick_, t_register_, t_whereami_, t_callme_, t_ping_;
     // throughput counters (bytes), split by path
     uint64_t tx_direct_ = 0, tx_relay_ = 0, rx_direct_ = 0, rx_relay_ = 0;
     double loss_ = 0.0;  // SPL_LOSS: fraction of egress packets to drop (testing)
