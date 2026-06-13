@@ -212,10 +212,43 @@ build_from_source() {
     say "Installed: $PREFIX/spl"
 }
 
+# --- shell completions: install the thin wrappers to per-user dirs ---
+# Files come from the local checkout when present, else from the raw repo.
+fetch_completion() {  # <file> <dest>
+    local name="$1" dest="$2" here
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+    if [ -n "$here" ] && [ -f "$here/completions/$name" ]; then
+        install -m 0644 "$here/completions/$name" "$dest" 2>/dev/null && return 0
+    fi
+    local url="https://raw.githubusercontent.com/${REPO_SLUG}/${SPL_COMPLETIONS_REF:-main}/completions/$name"
+    curl -fsSL "$url" -o "$dest" 2>/dev/null
+}
+
+install_completions() {
+    local did=""
+    # bash
+    local bdir="${BASH_COMPLETION_USER_DIR:-$HOME/.local/share/bash-completion}/completions"
+    mkdir -p "$bdir" && fetch_completion spl.bash "$bdir/spl" && did="$did bash"
+    # fish
+    if command -v fish >/dev/null 2>&1 || [ -d "$HOME/.config/fish" ]; then
+        mkdir -p "$HOME/.config/fish/completions"
+        fetch_completion spl.fish "$HOME/.config/fish/completions/spl.fish" && did="$did fish"
+    fi
+    # zsh: drop the file and tell the user how to put it on fpath
+    local zdir="$HOME/.local/share/spl/zsh"
+    mkdir -p "$zdir" && fetch_completion spl.zsh "$zdir/_spl" && did="$did zsh"
+    [ -n "$did" ] && say "Installed completions:$did"
+    case " $did " in *" zsh "*)
+        say "  zsh: add 'fpath=($zdir \$fpath)' before compinit in ~/.zshrc" ;;
+    esac
+}
+
 # --- main: prebuilt first (unless forced to source), then source as fallback ---
 if [ "${SPL_FROM_SOURCE:-0}" = "1" ] || ! try_prebuilt; then
     build_from_source
 fi
+
+install_completions || true
 
 # --- PATH hint ---
 case ":$PATH:" in

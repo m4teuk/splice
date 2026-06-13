@@ -145,6 +145,7 @@ class Daemon {
     void handle_cmd(int fd, const std::string& line);  // may adopt fd (PIPE)
     void drop_ctl(int fd, bool close_fd);
     std::string render_status(Millis now, bool verbose);
+    std::string render_status_raw();  // machine-readable, tab-separated (completion/scripting)
 
     DaemonOpts opts_;
     Endpoint server_{};
@@ -563,6 +564,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         return reply_close("OK\n");
     }
     if (cmd == "STATUS") {
+        if (t.size() > 1 && t[1] == "RAW") return reply_close("OK\n" + render_status_raw());
         const bool verbose = t.size() > 1 && t[1] == "VERBOSE";
         return reply_close("OK\n" + render_status(mono_ms(), verbose));
     }
@@ -829,6 +831,28 @@ std::string Daemon::render_status(Millis now, bool verbose) {
                 o << "\n";
             }
         }
+    }
+    return o.str();
+}
+
+// Tab-separated, one record per line, stable for scripting/completion:
+//   peer  <name>  <active|dormant>  <RELAY|DIRECT>
+//   reg   <peer>  <pipe>  <TYPE>            (persisted + live PIPE registrations)
+//   inst  <peer>  <id>  <in|out>  <type>    (live instances)
+std::string Daemon::render_status_raw() {
+    std::ostringstream o;
+    for (auto& [name, s] : sessions_) {
+        PathStatus ps = s.pm->status(mono_ms());
+        o << "peer\t" << name << "\t" << (s.pm->active() ? "active" : "dormant") << "\t"
+          << path_name(ps.active) << "\n";
+        if (store_)
+            for (const auto& r : store_->list_pipes(name)) o << "reg\t" << name << "\t" << r.name
+                                                             << "\t" << r.type << "\n";
+        for (const auto& [rname, reg] : s.pipe_regs) o << "reg\t" << name << "\t" << rname
+                                                       << "\tPIPE\n";
+        for (const auto& [id, in] : s.insts)
+            o << "inst\t" << name << "\t" << id << "\t" << (in->inbound ? "in" : "out") << "\t"
+              << in->type << "\n";
     }
     return o.str();
 }

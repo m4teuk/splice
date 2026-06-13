@@ -173,6 +173,16 @@ port = 443
 
 CLI flags override the config. Connection records live in the same dir, mode 0600.
 
+### Shell completion
+
+`install.sh` drops completion wrappers for bash and fish into the standard
+per-user dirs (and a `_spl` for zsh under `~/.local/share/spl/zsh`, with a
+one-line `fpath` hint). They're thin: all the logic lives in `spl __complete`,
+so completion covers commands, peer names, pipe types, your registered pipe
+names, live instance ids, flags, and file paths. To enable manually, source
+`completions/spl.bash`, put `completions/spl.zsh` (as `_spl`) on your `$fpath`,
+or copy `completions/spl.fish` to `~/.config/fish/completions/`.
+
 ## Test
 
 ```sh

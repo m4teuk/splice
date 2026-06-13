@@ -11,6 +11,7 @@
 
 #include "native/native.h"
 #include "peer/chat.h"
+#include "peer/complete.h"
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
 #include "peer/serve_get.h"
@@ -89,6 +90,7 @@ int main(int argc, char** argv) {
     if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
     if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
+    if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
     // `spl peer <sub>` and the promoted top-level forms `spl <sub>` are the same
     // commands — the `peer` keyword is an accepted-but-optional prefix.
