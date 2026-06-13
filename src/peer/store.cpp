@@ -187,7 +187,7 @@ bool Store::save_pipe(const PipeRecord& r, std::string* err) {
         if (err) *err = "cannot write " + path;
         return false;
     }
-    f << r.type << "\n";
+    f << r.type << "\n" << r.limit << "\n";
     for (const auto& a : r.args) f << a << "\n";
     return f.good();
 }
@@ -200,6 +200,7 @@ std::optional<PipeRecord> Store::load_pipe(const std::string& peer, const std::s
     r.name = name;
     if (!std::getline(f, r.type) || r.type.empty()) return std::nullopt;
     std::string line;
+    if (std::getline(f, line)) r.limit = static_cast<uint32_t>(std::strtoul(line.c_str(), nullptr, 10));
     while (std::getline(f, line)) r.args.push_back(line);
     return r;
 }

@@ -25,12 +25,13 @@ struct ConnRecord {
 
 // A persistent named pipe registration (daemon-owned types only; PIPE
 // registrations live and die with their owning process). One file per pipe
-// under <config>/pipes/<peer>/<name>: first line the type, then one arg per
-// line (args may contain spaces).
+// under <config>/pipes/<peer>/<name>: line 1 the type, line 2 the LIMIT (0 =
+// unlimited), then one arg per line (args may contain spaces).
 struct PipeRecord {
     std::string peer;
     std::string name;
     std::string type;
+    uint32_t limit = 0;
     std::vector<std::string> args;
 };
 

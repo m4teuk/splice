@@ -104,6 +104,21 @@ def main():
         stop(p)
         print("  unknown pipe rejected")
 
+        # LIMIT on a daemon-owned reg: a LIMIT-1 ECHO serves once, then retires.
+        assert spl(fenv, "register", "theleader", "once", "LIMIT", "1", "ECHO").returncode == 0
+        wait_status(fenv, "once")
+        p = subprocess.Popen([SPL, "open", "thefollower", "once"], env=lenv,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        p.stdin.write("a\n"); p.stdin.flush()
+        assert p.stdout.readline() == "a\n"
+        p.stdin.close(); stop(p)
+        # after the single use, the registration is gone (retired)
+        deadline = time.time() + 10
+        while time.time() < deadline and "once" in spl(fenv, "status").stdout:
+            time.sleep(0.3)
+        assert "once" not in spl(fenv, "status").stdout, "LIMIT-1 reg did not retire"
+        print("  LIMIT on a daemon-owned pipe OK (1-shot retired)")
+
         # reset clears every pipe
         assert spl(fenv, "reset").returncode == 0
         out = spl(fenv, "status").stdout
