@@ -96,6 +96,8 @@ struct Instance {
     bool dialing = false;
     bool wait = false;  // OPEN WAIT: UNKNOWN means "not yet" — re-dial until closed
     bool meta = false;  // a __LIST__ request: no OK handshake; bind on connect
+    int follow_fd = -1;        // OPEN FOLLOW: control fd to stream P/D/E progress to
+    std::string follow_last_;  // last progress line written (throttle)
 };
 
 // A named pipe registration the peer can connect to. Two flavours share one
@@ -355,6 +357,13 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                 }
                 spl::logf("[daemon] #%llu got '%s' for '%s'; giving up", (unsigned long long)id,
                           line.c_str(), in.want.c_str());
+                if (in.follow_fd >= 0) {  // tell the client *why* (clearer than "interrupted")
+                    const std::string m = "E '" + in.want + "' isn't served by " + s.name +
+                                          " (try: spl ls " + s.name + ")\n";
+                    spl::write_all(in.follow_fd, m.data(), m.size());
+                    ::close(in.follow_fd);
+                    in.follow_fd = -1;
+                }
                 close_instance(s, id, false);
                 return;
             }
@@ -468,6 +477,13 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         in.conn->on_writable = nullptr;
         in.conn->close();
     }
+    if (in.follow_fd >= 0) {  // tell the following client the outcome, then close
+        const std::string e = in.local ? in.local->error() : "";
+        const std::string fin =
+            !e.empty() ? "E " + e + "\n" : (in.local && in.local->done() ? "D\n" : "E interrupted\n");
+        spl::write_all(in.follow_fd, fin.data(), fin.size());
+        ::close(in.follow_fd);
+    }
     const std::string reg = in.reg;
     const bool inbound = in.inbound;
     if (inbound) {
@@ -556,6 +572,14 @@ void Daemon::tick(Millis now) {
                 in.conn->sndbuf() >= kChunk)
                 watch_cfd(s, in);
             if (in.local) in.local->tick(now);
+            // Stream progress to a following client when it changes.
+            if (in.follow_fd >= 0 && in.local) {
+                std::string line = "P " + in.local->describe() + "\n";
+                if (line != in.follow_last_) {
+                    in.follow_last_ = line;
+                    spl::write_all(in.follow_fd, line.data(), line.size());
+                }
+            }
         }
         for (uint64_t id : expired) close_instance(s, id, false);
     }
@@ -719,12 +743,17 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     }
 
     if (cmd == "OPEN") {
-        // OPEN <peer> <pipe> [WAIT] <TYPE> [args] — WAIT keeps re-dialing while
-        // the peer answers UNKNOWN (the pipe isn't registered *yet*).
+        // OPEN <peer> <pipe> [WAIT] [FOLLOW] <TYPE> [args]
+        //   WAIT   keeps re-dialing while the peer answers UNKNOWN (not registered yet)
+        //   FOLLOW streams progress (P/D/E lines) back on this control connection
         size_t ti = 3;
-        const bool wait = t.size() > ti && t[ti] == "WAIT";
-        if (wait) ++ti;
-        if (t.size() <= ti) return reply_close("ERR usage: OPEN <peer> <pipe> [WAIT] <TYPE> [args]\n");
+        bool wait = false, follow = false;
+        for (; ti < t.size() && (t[ti] == "WAIT" || t[ti] == "FOLLOW"); ++ti) {
+            if (t[ti] == "WAIT") wait = true;
+            if (t[ti] == "FOLLOW") follow = true;
+        }
+        if (t.size() <= ti)
+            return reply_close("ERR usage: OPEN <peer> <pipe> [WAIT] [FOLLOW] <TYPE> [args]\n");
         std::string err;
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
@@ -748,7 +777,13 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             in->local = make_local_end(t[ti], {t.begin() + ti + 1, t.end()}, &terr);
             if (!in->local) return reply_close("ERR " + terr + "\n");
             write_str(fd, "OK " + std::to_string(in->id) + "\n");
-            drop_ctl(fd, true);
+            if (follow) {  // keep the control fd to stream progress + a final status
+                in->follow_fd = fd;
+                poller_.remove(fd);
+                ctl_.erase(fd);
+            } else {
+                drop_ctl(fd, true);
+            }
         }
         const uint64_t id = in->id;
         s->insts[id] = std::move(in);

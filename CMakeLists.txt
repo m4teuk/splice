@@ -219,6 +219,10 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/serve_get_it.py $<TARGET_FILE:spl>)
     set_tests_properties(serve_get_integration PROPERTIES TIMEOUT 180)
 
+    add_test(NAME filex_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/filex_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(filex_integration PROPERTIES TIMEOUT 180)
+
     add_test(NAME complete_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)

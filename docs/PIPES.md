@@ -129,8 +129,8 @@ kernel, API, and wire format never change.
 | type | input | output |
 |---|---|---|
 | `ECHO` | anything | a copy of the input (diagnostics) |
-| `SHARE_FILE <path>` | ignored | the file's content, like a symlink to the bytes |
-| `GET_FILE <path>` | written to `<path>` | nothing |
+| `SHARE_FILE <path>` | RESUME offsets | the file (or directory) content |
+| `GET_FILE <target> [OVERWRITE]` | the stream → written under `<target>` | RESUME offsets |
 | `PIPE` | from the creating process | to the creating process |
 
 `ECHO` is handy as a diagnostic target — register one explicitly with
@@ -146,12 +146,32 @@ registered `PIPE`, with the terminal on both outer ends.
 ### Type pairs may speak protocols — above the pipe layer
 
 A pipe carries raw bytes, but two *consenting* types may layer a protocol over
-them. `SHARE_FILE`/`GET_FILE` are such a matched pair: a small header (at
-minimum the byte count) precedes the content, which is how `GET_FILE` knows the
-transfer completed and how far along it is. This never leaks downward: the
-daemon splices opaque bytes, and connecting `SHARE_FILE` to a raw `PIPE` simply
-delivers header-plus-content to whatever reads it — reasonable use is the
-user's job.
+them. `SHARE_FILE`/`GET_FILE` are such a matched pair speaking **SPLF2**, a
+multi-entry, resumable file protocol (one path may be a single file or a whole
+directory, streamed recursively):
+
+```
+sender → "SPLF2 <size> <crc32hex> <relpath>\n"
+recv   → "RESUME <offset>\n"          (offset bytes of a matching .part it kept)
+sender → <size - offset> raw bytes
+...                                   (one OFFER/RESUME/bytes per file)
+sender → "SPLF2-END\n"
+```
+
+The receiver writes each entry to `<dest>.part` (plus a `.part.meta` recording
+size/crc/relpath) and renames to `<dest>` once the crc verifies — so an
+interrupted transfer **resumes**, a same-named-but-changed file **restarts**
+(its crc won't match the kept `.part`), and corruption is caught. The `SPLF2`
+magic also lets the receiver tell a real `SHARE_FILE` apart from any other pipe
+(getting, say, a `chat` reports "not a SHARE_FILE pipe" rather than a vague
+failure). None of this leaks downward — the daemon still splices opaque bytes.
+
+`spl serve`/`get` are the pull form; `spl inbox`/`send` are the push form (the
+receiver opts in with an `inbox` `GET_FILE` registration, then the sender opens
+it with `SHARE_FILE`). `inbox --limit N` uses the N-shot LIMIT to accept exactly
+N pushes. Foreground `get`/`send` stream live progress over the control
+connection (an `OPEN … FOLLOW`); `-b` detaches and the transfer shows in
+`spl status`.
 
 ## Rules
 

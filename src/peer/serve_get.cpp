@@ -1,10 +1,12 @@
-// spl serve / spl get: thin sugar over the daemon verbs (docs/PIPES.md).
+// File-transfer commands — thin clients of the daemon's SHARE_FILE/GET_FILE
+// pipes (docs/PIPES.md). The transfer protocol lives entirely in the daemon
+// (peer/pipes.cpp); these commands just register/open and, in the foreground,
+// FOLLOW the daemon's progress on the control connection.
 //
-//   serve <peer> [--name n] <path>   == REGISTER <peer> <n|basename> SHARE_FILE <abspath>
-//   get <peer> <pipe> --background   == OPEN <peer> <pipe> GET_FILE <target>
-//   get <peer> <pipe>                == OPEN <peer> <pipe> PIPE, with this process
-//                                       speaking the SHARE_FILE/GET_FILE protocol
-//                                       itself: progress on a TTY, real exit code.
+//   serve <peer> [--name n] <path>      REGISTER <peer> <n> SHARE_FILE <path>
+//   get   <peer> <pipe> [-o p] [-f] [-b]   OPEN .. GET_FILE <target>
+//   send  <peer> <path…>                OPEN <peer> inbox SHARE_FILE <path>   (push)
+//   inbox <peer> <dir> [--limit N] [-f] REGISTER <peer> inbox [LIMIT N] GET_FILE <dir>
 #include "peer/serve_get.h"
 
 #include <limits.h>
@@ -17,51 +19,38 @@
 #include <vector>
 
 #include "common/log.h"
-#include "common/time.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
-#include "peer/pipes.h"
 
 namespace spl::peer {
 
 namespace {
 
-struct CommonOpts {
+constexpr const char* kInbox = "inbox";  // the well-known push target name
+
+struct Opts {
     DaemonOpts daemon;
     std::vector<std::string> pos;
     std::string name, out;
-    bool overwrite = false, background = false;
-    bool ok = true;
+    uint32_t limit = 0;
+    bool overwrite = false, background = false, ok = true;
 };
 
-CommonOpts parse(int argc, char** argv) {
-    CommonOpts o;
+Opts parse(int argc, char** argv) {
+    Opts o;
     o.daemon = default_daemon_opts();
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto val = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
-        if (a == "--server") {
-            const char* v = val();
-            if (v) o.daemon.server = v;
-        } else if (a == "--port") {
-            const char* v = val();
-            if (v) o.daemon.port = static_cast<uint16_t>(std::atoi(v));
-        } else if (a == "--name") {
-            const char* v = val();
-            if (v) o.name = v;
-        } else if (a == "-o" || a == "--out") {
-            const char* v = val();
-            if (v) o.out = v;
-        } else if (a == "-f" || a == "--force") {
-            o.overwrite = true;
-        } else if (a == "--background" || a == "-b") {
-            o.background = true;
-        } else if (!a.empty() && a[0] == '-') {
-            spl::logf("unexpected option '%s'", a.c_str());
-            o.ok = false;
-        } else {
-            o.pos.push_back(a);
-        }
+        if (a == "--server") { if (auto v = val()) o.daemon.server = v; }
+        else if (a == "--port") { if (auto v = val()) o.daemon.port = (uint16_t)std::atoi(v); }
+        else if (a == "--name") { if (auto v = val()) o.name = v; }
+        else if (a == "-o" || a == "--out") { if (auto v = val()) o.out = v; }
+        else if (a == "--limit") { if (auto v = val()) o.limit = (uint32_t)std::atoi(v); }
+        else if (a == "-f" || a == "--force") o.overwrite = true;
+        else if (a == "-b" || a == "--background") o.background = true;
+        else if (!a.empty() && a[0] == '-') { spl::logf("unexpected option '%s'", a.c_str()); o.ok = false; }
+        else o.pos.push_back(a);
     }
     return o;
 }
@@ -70,177 +59,166 @@ std::string abspath(const std::string& p) {
     if (!p.empty() && p[0] == '/') return p;
     char cwd[PATH_MAX];
     if (!::getcwd(cwd, sizeof(cwd))) return p;
-    return std::string(cwd) + (p.empty() ? "" : "/" + p);
+    return std::string(cwd) + "/" + p;
 }
-
 std::string basename_of(const std::string& p) {
     const size_t s = p.find_last_of('/');
     return s == std::string::npos ? p : p.substr(s + 1);
 }
 
-bool is_dir(const std::string& p) {
-    struct stat st{};
-    return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-}
-bool exists(const std::string& p) {
-    struct stat st{};
-    return ::stat(p.c_str(), &st) == 0;
+// Follow a FOLLOW-opened control fd: render "P <progress>" lines and return the
+// exit code from the final "D" (done) / "E <msg>" (error) line.
+int follow(int fd, const char* ctx) {
+    const bool tty = ::isatty(STDERR_FILENO);
+    std::string buf;
+    char rb[4096];
+    for (;;) {
+        size_t nl;
+        while ((nl = buf.find('\n')) != std::string::npos) {
+            std::string line = buf.substr(0, nl);
+            buf.erase(0, nl + 1);
+            if (line.empty()) continue;
+            if (line[0] == 'P') {
+                if (tty) std::fprintf(stderr, "\r\033[K%s", line.c_str() + 2);
+            } else if (line[0] == 'D') {
+                if (tty) std::fputc('\n', stderr);
+                return 0;
+            } else if (line[0] == 'E') {
+                if (tty) std::fputc('\n', stderr);
+                spl::logf("%s: %s", ctx, line.size() > 2 ? line.c_str() + 2 : "failed");
+                return 1;
+            }
+        }
+        ssize_t n = ::read(fd, rb, sizeof(rb));
+        if (n <= 0) {
+            spl::logf("%s: lost contact with the daemon", ctx);
+            return 1;
+        }
+        buf.append(rb, static_cast<size_t>(n));
+    }
 }
 
-void progress(bool tty, Millis* last, const std::string& name, uint64_t got, uint64_t total) {
-    if (!tty) return;
-    const Millis now = mono_ms();
-    if (got < total && now - *last < 100) return;
-    *last = now;
-    std::fprintf(stderr, "\r%s  %3llu%%  %s / %s   ", name.c_str(),
-                 total ? static_cast<unsigned long long>(got * 100 / total) : 0,
-                 human_bytes(got).c_str(), human_bytes(total).c_str());
-    if (got >= total) std::fprintf(stderr, "\n");
+// OPEN a daemon-owned end and, unless backgrounded, FOLLOW it to completion.
+int open_and_follow(const Opts& o, const std::string& peer, const std::string& pipe,
+                    const std::string& local_type_args, const char* ctx, const char* bg_noun) {
+    std::string err;
+    if (!ensure_daemon(o.daemon, &err)) {
+        spl::logf("%s: %s", ctx, err.c_str());
+        return 1;
+    }
+    if (o.background) {
+        const std::string r = daemon_request("OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) +
+                                             " " + local_type_args);
+        if (!ok_reply(r)) {
+            daemon_fail(ctx, r);
+            return 1;
+        }
+        std::printf("%s in the background as instance #%s (see `spl status`)\n", bg_noun,
+                    r.size() > 3 ? r.c_str() + 3 : "?");
+        return 0;
+    }
+    int fd = daemon_connect();
+    if (fd < 0) {
+        spl::logf("%s: cannot reach the daemon", ctx);
+        return 1;
+    }
+    const std::string r = send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) +
+                                           " FOLLOW " + local_type_args);
+    if (!ok_reply(r)) {
+        daemon_fail(ctx, r);
+        ::close(fd);
+        return 1;
+    }
+    int rc = follow(fd, ctx);
+    ::close(fd);
+    return rc;
 }
 
 }  // namespace
 
 int serve_main(int argc, char** argv) {
-    CommonOpts o = parse(argc, argv);
+    Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl serve <peer> [--name <pipe>] <path>");
+        spl::logf("usage: spl serve <peer> [--name <pipe>] [--limit N] <path>   (path may be a dir)");
         return 2;
     }
     const std::string& peer = o.pos[0];
     const std::string path = abspath(o.pos[1]);
-    const std::string name = o.name.empty() ? basename_of(path) : o.name;
+    const std::string name = o.name.empty() ? basename_of(o.pos[1]) : o.name;
 
     std::string err;
     if (!ensure_daemon(o.daemon, &err)) {
         spl::logf("spl serve: %s", err.c_str());
         return 1;
     }
-    clog("registering '%s' (SHARE_FILE %s) for %s...", name.c_str(), path.c_str(), peer.c_str());
-    const std::string r = daemon_request("REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) +
-                                         " SHARE_FILE " + ctl_encode(path));
+    std::string line = "REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) + " ";
+    if (o.limit) line += "LIMIT " + std::to_string(o.limit) + " ";
+    line += "SHARE_FILE " + ctl_encode(path);
+    const std::string r = daemon_request(line);
     if (!ok_reply(r)) {
         daemon_fail("spl serve", r);
         return 1;
     }
-    clog("registered; the daemon serves this until `spl unregister %s %s`", peer.c_str(),
-         name.c_str());
     std::printf("serving '%s' to %s as '%s'\n", path.c_str(), peer.c_str(), name.c_str());
+    std::printf("  the peer fetches it with:  spl get <you> %s\n", name.c_str());
     return 0;
 }
 
 int get_main(int argc, char** argv) {
-    CommonOpts o = parse(argc, argv);
+    Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl get <peer> <pipe> [-o <path>] [-f] [--background]");
+        spl::logf("usage: spl get <peer> <pipe> [-o <path>] [-f] [-b]");
+        return 2;
+    }
+    const std::string target = o.out.empty() ? abspath(".") : abspath(o.out);
+    std::string args = "GET_FILE " + ctl_encode(target);
+    if (o.overwrite) args += " OVERWRITE";
+    return open_and_follow(o, o.pos[0], o.pos[1], args, "spl get", "receiving");
+}
+
+int send_main(int argc, char** argv) {
+    Opts o = parse(argc, argv);
+    if (!o.ok || o.pos.size() < 2) {
+        spl::logf("usage: spl send <peer> <path>…   (each path may be a directory)");
         return 2;
     }
     const std::string& peer = o.pos[0];
-    const std::string& pipe = o.pos[1];
+    int rc = 0;
+    for (size_t i = 1; i < o.pos.size(); ++i) {  // one SHARE_FILE connection per path
+        const std::string path = abspath(o.pos[i]);
+        if (open_and_follow(o, peer, kInbox, "SHARE_FILE " + ctl_encode(path), "spl send",
+                            "sending") != 0)
+            rc = 1;
+    }
+    return rc;
+}
+
+int inbox_main(int argc, char** argv) {
+    Opts o = parse(argc, argv);
+    if (!o.ok || o.pos.size() != 2) {
+        spl::logf("usage: spl inbox <peer> <dir> [--limit N] [-f]");
+        return 2;
+    }
+    const std::string& peer = o.pos[0];
+    const std::string dir = abspath(o.pos[1]);
+    ::mkdir(dir.c_str(), 0755);  // GET_FILE needs the directory to exist (dir-mode)
 
     std::string err;
     if (!ensure_daemon(o.daemon, &err)) {
-        spl::logf("spl get: %s", err.c_str());
+        spl::logf("spl inbox: %s", err.c_str());
         return 1;
     }
-
-    if (o.background) {  // daemon-owned GET_FILE; watch it in `spl status`
-        const std::string target = abspath(o.out);  // "" -> cwd (a directory)
-        clog("opening '%s' on %s as a background GET_FILE -> %s", pipe.c_str(), peer.c_str(),
-             target.empty() ? "(cwd)" : target.c_str());
-        std::string line = "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " GET_FILE " +
-                           ctl_encode(target);
-        if (o.overwrite) line += " OVERWRITE";
-        const std::string r = daemon_request(line);
-        if (!ok_reply(r)) {
-            daemon_fail("spl get", r);
-            return 1;
-        }
-        clog("started as instance #%s; watch it with `spl status`", r.substr(3).c_str());
-        std::printf("receiving in the background as instance #%s (see `spl status`)\n",
-                    r.substr(3).c_str());
-        return 0;
-    }
-
-    // Foreground: we are the local end — read the pair protocol ourselves.
-    int fd = daemon_connect();
-    if (fd < 0) {
-        spl::logf("spl get: cannot reach the daemon");
-        return 1;
-    }
-    clog("opening '%s' on %s...", pipe.c_str(), peer.c_str());
-    const std::string r =
-        send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " PIPE");
+    std::string line = "REGISTER " + ctl_encode(peer) + " " + kInbox + " ";
+    if (o.limit) line += "LIMIT " + std::to_string(o.limit) + " ";
+    line += "GET_FILE " + ctl_encode(dir);
+    if (o.overwrite) line += " OVERWRITE";
+    const std::string r = daemon_request(line);
     if (!ok_reply(r)) {
-        daemon_fail("spl get", r);
-        ::close(fd);
+        daemon_fail("spl inbox", r);
         return 1;
     }
-    clog("connected; waiting for the file header...");
-
-    const bool tty = ::isatty(STDERR_FILENO);
-    std::string hdr, path, name;
-    uint64_t size = 0, got = 0;
-    FILE* f = nullptr;
-    Millis last = 0;
-    bool done = false;
-    uint8_t buf[8192];
-    ssize_t n;
-    while (!done && (n = ::read(fd, buf, sizeof(buf))) > 0) {
-        size_t off = 0;
-        if (!f) {  // header phase
-            while (off < static_cast<size_t>(n) && hdr.size() < 512 && buf[off] != '\n')
-                hdr += static_cast<char>(buf[off++]);
-            if (off < static_cast<size_t>(n) && buf[off] == '\n') {
-                ++off;
-                if (!parse_file_header(hdr, &size, &name)) {
-                    spl::logf("spl get: malformed stream (is '%s' a SHARE_FILE pipe?)",
-                              pipe.c_str());
-                    break;
-                }
-                path = o.out.empty() ? safe_file_name(name)
-                                     : (is_dir(o.out) ? o.out + "/" + safe_file_name(name) : o.out);
-                if (!o.overwrite && exists(path)) {
-                    spl::logf("spl get: '%s' exists (use -f to overwrite)", path.c_str());
-                    break;
-                }
-                f = std::fopen((path + ".part").c_str(), "wb");
-                if (!f) {
-                    spl::logf("spl get: cannot write '%s.part'", path.c_str());
-                    break;
-                }
-                clog("receiving '%s' (%s) -> %s", name.c_str(), human_bytes(size).c_str(),
-                     path.c_str());
-            } else {
-                if (hdr.size() >= 512) {
-                    spl::logf("spl get: malformed stream");
-                    break;
-                }
-                continue;
-            }
-        }
-        const size_t keep =
-            static_cast<size_t>(std::min<uint64_t>(static_cast<size_t>(n) - off, size - got));
-        if (keep && std::fwrite(buf + off, 1, keep, f) != keep) {
-            spl::logf("spl get: write failed for '%s.part'", path.c_str());
-            break;
-        }
-        got += keep;
-        progress(tty, &last, name, got, size);
-        done = (got == size);
-    }
-    ::close(fd);
-    if (f) std::fclose(f);
-    if (done) {
-        if (std::rename((path + ".part").c_str(), path.c_str()) != 0) {
-            spl::logf("spl get: rename failed for '%s'", path.c_str());
-            return 1;
-        }
-        std::printf("received '%s' (%s)\n", path.c_str(), human_bytes(size).c_str());
-        return 0;
-    }
-    if (!path.empty()) ::remove((path + ".part").c_str());
-    spl::logf("spl get: transfer incomplete");
-    return 1;
+    std::printf("inbox open: %s can `spl send <you> <path>` into %s\n", peer.c_str(), dir.c_str());
+    return 0;
 }
 
 }  // namespace spl::peer

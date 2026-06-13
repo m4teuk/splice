@@ -17,12 +17,12 @@ struct CommandDef {
 
 inline constexpr CommandDef kCommands[] = {
     {"server", false, false}, {"pair", false, false},     {"serve", false, false},
-    {"get", false, false},    {"chat", false, false},     {"status", true, false},
-    {"start", true, false},   {"stop", true, false},      {"reset", true, false},
-    {"register", true, false},{"unregister", true, false},{"open", true, false},
-    {"close", true, false},   {"ls", true, false},        {"rename", true, false},
-    {"remove", true, false},  {"add", true, false},       {"list", true, true},
-    {"rm", true, true},
+    {"get", false, false},    {"send", false, false},     {"inbox", false, false},
+    {"chat", false, false},   {"status", true, false},    {"start", true, false},
+    {"stop", true, false},    {"reset", true, false},     {"register", true, false},
+    {"unregister", true, false}, {"open", true, false},   {"close", true, false},
+    {"ls", true, false},      {"rename", true, false},    {"remove", true, false},
+    {"add", true, false},     {"list", true, true},       {"rm", true, true},
 };
 
 inline bool is_managed_command(std::string_view name) {

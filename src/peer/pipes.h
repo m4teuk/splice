@@ -30,6 +30,8 @@ class LocalEnd {
     virtual void on_tunnel_writable() {}       // send buffer freed up (pump opportunity)
     virtual void tick(Millis) {}
     virtual std::string describe() const = 0;  // one status line fragment
+    virtual bool done() const { return false; }       // finished its job successfully
+    virtual std::string error() const { return ""; }  // non-empty if it failed
 };
 
 // ECHO: sends back everything it receives. Diagnostics.
@@ -41,38 +43,59 @@ class EchoEnd : public LocalEnd {
     std::string describe() const override { return "echo"; }
 };
 
-// SHARE_FILE/GET_FILE speak a one-line protocol above the raw pipe:
-//   "SPLF1 <size> <name>\n" then exactly <size> raw bytes.
-// The name is advisory (a suggested filename, spaces allowed); the size is what
-// lets the receiver know the transfer completed — a close alone proves nothing.
-std::string format_file_header(uint64_t size, const std::string& name);
-// Parses a complete header line (without the newline). False if malformed.
-bool parse_file_header(const std::string& line, uint64_t* size, std::string* name);
-// Reduce an advisory name to a safe single path component ("received.file" if
-// nothing safe remains).
-std::string safe_file_name(const std::string& name);
+// SHARE_FILE <path> / GET_FILE <target> speak a multi-entry, resumable protocol
+// above the raw pipe. A path may be a single file or a directory (streamed
+// recursively). Per entry the sender offers, the receiver says how much it
+// already has, then the sender streams the rest:
+//
+//   sender -> "SPLF2 <size> <crc32hex> <relpath>\n"
+//   recv   -> "RESUME <offset>\n"        (offset bytes of a matching .part it kept)
+//   sender -> <size - offset> raw bytes
+//   ...                                  (repeat per entry)
+//   sender -> "SPLF2-END\n"
+//
+// The receiver writes each entry to "<dest>.part" (+ a ".part.meta" recording
+// size/crc/relpath) and renames to <dest> once the crc verifies — so an
+// interrupted transfer resumes, and a same-named-but-changed file restarts
+// (the crc won't match). The "SPLF2" magic also lets the receiver tell a
+// non-file pipe apart from a real SHARE_FILE.
 
-// SHARE_FILE <path>: streams the file's content (header first). Ignores input.
+// SHARE_FILE <path>: streams <path> (file or directory). Ignores nothing — it
+// reads RESUME offsets from the receiver.
 class ShareFileEnd : public LocalEnd {
  public:
+    struct Entry {
+        std::string relpath;  // path as the receiver should store it (with '/')
+        std::string abspath;  // local file to read
+        uint64_t size = 0;
+    };
+    // Enumerate <path> (file -> one entry; dir -> recursive). Null + *err if
+    // unreadable / empty.
     static std::unique_ptr<ShareFileEnd> open(const std::string& path, std::string* err);
     ~ShareFileEnd() override;
     void start() override { pump(); }
-    void on_tunnel_data(ByteSpan) override {}  // not our problem
+    void on_tunnel_data(ByteSpan b) override;  // RESUME lines
     void on_tunnel_writable() override { pump(); }
     std::string describe() const override;
+    bool done() const override { return state_ == State::Done; }
+    std::string error() const override { return err_; }
 
  private:
+    enum class State { Offer, WaitResume, Stream, End, Done };
     void pump();
+    std::vector<Entry> entries_;
+    size_t idx_ = 0;
+    State state_ = State::Offer;
     FILE* f_ = nullptr;
-    std::string name_;
-    uint64_t size_ = 0, sent_ = 0;
-    bool header_sent_ = false;
+    uint64_t remaining_ = 0;   // bytes left to stream in the current entry
+    uint64_t total_ = 0, sent_ = 0;
+    std::string rbuf_;         // accumulates the RESUME line
+    std::string err_;
 };
 
-// GET_FILE <target> [OVERWRITE]: writes the stream to <target> (a directory
-// target uses the sender's suggested name inside it). Writes to <path>.part and
-// renames on completion; a broken transfer leaves nothing behind.
+// GET_FILE <target> [OVERWRITE]: receives a SPLF2 stream into <target> (an
+// existing directory -> files placed by relpath under it; otherwise a single
+// file written to that path). Resumes from a kept ".part"; verifies crc.
 class GetFileEnd : public LocalEnd {
  public:
     GetFileEnd(std::string target, bool overwrite)
@@ -81,17 +104,25 @@ class GetFileEnd : public LocalEnd {
     void on_tunnel_data(ByteSpan b) override;
     void on_tunnel_closed() override;
     std::string describe() const override;
+    bool done() const override { return done_; }
+    std::string error() const override { return err_; }
 
  private:
+    void handle_header(const std::string& line);  // an OFFER or END line
+    void finish_entry();
     void fail(const std::string& why);
     std::string target_;
     bool overwrite_ = false;
-    std::string hdr_;          // header accumulator
-    std::string path_, name_;  // resolved once the header arrives
+    enum class State { Header, Recv, Done } state_ = State::Header;
+    std::string hdr_;          // accumulates the current OFFER/END line
+    // current entry:
+    std::string dest_, part_, meta_, relpath_;
     FILE* f_ = nullptr;
     uint64_t size_ = 0, got_ = 0;
+    uint32_t want_crc_ = 0, crc_ = 0;
+    uint64_t files_ = 0;       // completed files (for describe)
     bool done_ = false;
-    std::string error_;
+    std::string err_;
 };
 
 // Factory for daemon-owned types ("ECHO", "SHARE_FILE", "GET_FILE").
