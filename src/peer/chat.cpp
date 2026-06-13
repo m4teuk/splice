@@ -62,6 +62,7 @@ int chat_main(int argc, char** argv) {
     // starts first just sits until the other side shows up).
     const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat PIPE"
                                     : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
+    spl::logf("[spl] %s chat with %s...", leader ? "hosting" : "joining", name.c_str());
     const std::string r = send_command(fd, verb);
     if (r.rfind("OK", 0) != 0) {
         spl::logf("spl chat: %s", r.empty() ? "no reply from daemon" : r.c_str());

@@ -124,12 +124,14 @@ int do_pipe_verb(int argc, char** argv, const std::string& line) {
         spl::logf("spl peer: cannot reach the daemon");
         return 1;
     }
+    spl::logf("[spl] %s", line.c_str());
     const std::string r = send_command(fd, line);
     if (r.rfind("OK", 0) != 0) {
         spl::logf("spl peer: %s", r.empty() ? "no reply from daemon" : r.c_str());
         ::close(fd);
         return 1;
     }
+    spl::logf("[spl] connected; bridging stdin/stdout (^D to end)");
     int rc = bridge_stdio(fd);
     ::close(fd);
     return rc;

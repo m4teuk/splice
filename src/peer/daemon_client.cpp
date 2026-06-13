@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "common/log.h"
 #include "common/time.h"
 
 namespace spl::peer {
@@ -72,7 +73,23 @@ std::string daemon_request(const std::string& line) {
 }
 
 bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
-    if (daemon_request("PING") == "OK") return true;
+#ifndef SPL_GIT_SHA
+#define SPL_GIT_SHA "unknown"
+#endif
+    if (daemon_request("PING") == "OK") {
+        const std::string v = daemon_request("VERSION");  // "OK <sha>" on a current daemon
+        const std::string want = std::string("OK ") + SPL_GIT_SHA;
+        if (v != want) {
+            spl::logf("[spl] WARNING: the running daemon is a different build (%s vs this %s).",
+                      v.empty() ? "old/unknown" : v.c_str(), SPL_GIT_SHA);
+            spl::logf("[spl]   run `spl peer stop` to restart it on the new binary.");
+        } else {
+            spl::logf("[spl] daemon already running (%s)", daemon_socket_path().c_str());
+        }
+        return true;
+    }
+    spl::logf("[spl] no daemon running; starting one (relay %s:%u)", opts.server.c_str(),
+              opts.port);
 
     pid_t pid = ::fork();
     if (pid < 0) {
@@ -88,12 +105,20 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
         if (!std::freopen("/dev/null", "r", stdin)) {}
         if (!std::freopen(log.c_str(), "a", stdout)) {}
         if (!std::freopen(log.c_str(), "a", stderr)) {}
+        // freopen to a regular file makes glibc fully-buffer the stream, so logs
+        // would not appear until exit. Force line buffering for live tailing.
+        std::setvbuf(stdout, nullptr, _IOLBF, 0);
+        std::setvbuf(stderr, nullptr, _IOLBF, 0);
         _exit(daemon_run(opts));
     }
     // parent: wait for the socket to come up
     const Millis deadline = mono_ms() + 5000;
     while (mono_ms() < deadline) {
-        if (daemon_request("PING") == "OK") return true;
+        if (daemon_request("PING") == "OK") {
+            spl::logf("[spl] daemon up (pid %d, log %s/daemon.log)", static_cast<int>(pid),
+                      runtime_dir().c_str());
+            return true;
+        }
         struct timespec ts {0, 50 * 1000 * 1000};
         ::nanosleep(&ts, nullptr);
     }

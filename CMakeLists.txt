@@ -112,6 +112,9 @@ add_library(spl_peer STATIC
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
 target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip)
+# The daemon reports its build sha (VERSION verb) and the client checks it, so a
+# stale running daemon is detected instead of producing confusing errors.
+target_compile_definitions(spl_peer PUBLIC SPL_GIT_SHA="${SPL_GIT_SHA}")
 # netstack.cpp includes lwIP headers — silence the htons/ntohs redefinition noise
 # on clang (see lwipcore above).
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")

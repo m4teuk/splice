@@ -274,15 +274,20 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                 in.local = make_local_end(rec->type, rec->args, nullptr);
             }
             if (!in.local && in.cfd < 0) {
+                spl::logf("[daemon] %s requested '%s' -> UNKNOWN", s.name.c_str(), line.c_str());
                 in.conn->send(as_span(std::string("UNKNOWN\n")));
                 close_instance(s, id, false);
                 return;
             }
+            spl::logf("[daemon] %s requested '%s' -> OK (#%llu, %s)", s.name.c_str(), line.c_str(),
+                      (unsigned long long)id, in.type.c_str());
             in.conn->send(as_span(std::string("OK\n")));
             bind_end(s, in);
         } else {
             if (line != "OK") {  // UNKNOWN or garbage
                 if (in.wait && in.conn) {  // not registered yet: drop this conn, re-dial
+                    spl::logf("[daemon] #%llu got '%s' for '%s'; not registered yet, retrying",
+                              (unsigned long long)id, line.c_str(), in.want.c_str());
                     in.conn->on_recv = nullptr;
                     in.conn->on_closed = nullptr;
                     in.conn->on_error = nullptr;
@@ -291,9 +296,13 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                     in.next_dial = mono_ms() + 1000;
                     return;
                 }
+                spl::logf("[daemon] #%llu got '%s' for '%s'; giving up", (unsigned long long)id,
+                          line.c_str(), in.want.c_str());
                 close_instance(s, id, false);
                 return;
             }
+            spl::logf("[daemon] #%llu '%s' accepted; splicing", (unsigned long long)id,
+                      in.want.c_str());
             bind_end(s, in);
         }
         if (!rest.empty()) on_tunnel_data(s, id, as_span(rest));
@@ -324,15 +333,20 @@ void Daemon::dial(Session& s, Instance& in, Millis now) {
     Instance* ip = &in;
     Session* sp = &s;
     const uint64_t id = in.id;
+    const std::string sname = s.name;
+    spl::logf("[daemon] #%llu dialing %s:%s (%s)", (unsigned long long)id, sname.c_str(),
+              in.want.c_str(), in.wait ? "wait" : "once");
     s.ns->connect(
         s.peer, kPipePort,
-        [this, sp, ip, id](TcpConn* c) {
+        [this, sp, ip, id, sname](TcpConn* c) {
             ip->conn = c;
             ip->dialing = false;
             c->on_recv = [this, sp, id](ByteSpan b) { on_tunnel_data(*sp, id, b); };
             c->on_closed = [this, sp, id] { on_tunnel_gone(*sp, id); };
             c->on_error = [this, sp, id] { on_tunnel_gone(*sp, id); };
             c->send(as_span(ip->want + "\n"));
+            spl::logf("[daemon] #%llu connected to %s, requested '%s'", (unsigned long long)id,
+                      sname.c_str(), ip->want.c_str());
         },
         [ip] {  // this attempt failed; tick re-dials until the deadline
             ip->conn = nullptr;
@@ -382,6 +396,9 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         in.conn->close();
     }
     if (in.inbound && finished) ++s.finished[in.reg];
+    spl::logf("[daemon] #%llu closed (%s, up %s down %s)", (unsigned long long)id,
+              finished ? "done" : "aborted", human_bytes(in.up).c_str(),
+              human_bytes(in.down).c_str());
     s.insts.erase(it);
 }
 
@@ -477,6 +494,12 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     const std::string& cmd = t[0];
 
     if (cmd == "PING") return reply_close("OK\n");
+    if (cmd == "VERSION") {
+#ifndef SPL_GIT_SHA
+#define SPL_GIT_SHA "unknown"
+#endif
+        return reply_close(std::string("OK ") + SPL_GIT_SHA + "\n");
+    }
     if (cmd == "STOP") {
         g_dstop.store(true);
         return reply_close("OK\n");

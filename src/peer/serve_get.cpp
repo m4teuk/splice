@@ -116,6 +116,8 @@ int serve_main(int argc, char** argv) {
         spl::logf("spl serve: %s", err.c_str());
         return 1;
     }
+    spl::logf("[spl] registering '%s' (SHARE_FILE %s) for %s...", name.c_str(), path.c_str(),
+              peer.c_str());
     const std::string r = daemon_request("REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) +
                                          " SHARE_FILE " + ctl_encode(path));
     if (r != "OK") {
@@ -162,6 +164,7 @@ int get_main(int argc, char** argv) {
         spl::logf("spl get: cannot reach the daemon");
         return 1;
     }
+    spl::logf("[spl] opening '%s' on %s...", pipe.c_str(), peer.c_str());
     const std::string r =
         send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " PIPE");
     if (r.rfind("OK", 0) != 0) {
@@ -169,6 +172,7 @@ int get_main(int argc, char** argv) {
         ::close(fd);
         return 1;
     }
+    spl::logf("[spl] connected; waiting for data...");
 
     const bool tty = ::isatty(STDERR_FILENO);
     std::string hdr, path, name;
