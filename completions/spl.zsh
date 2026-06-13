@@ -1,6 +1,5 @@
-#compdef spl
-# zsh completion for spl. Thin wrapper: all logic lives in `spl __complete`.
-# Enable: put this file (named `_spl`) on your $fpath and `autoload -U compinit && compinit`.
+# zsh completion for spl. Source this from ~/.zshrc (install.sh can wire it up
+# for you). Thin wrapper: all logic lives in `spl __complete`.
 _spl() {
     local out
     # zsh `words` is 1-indexed with words[1]=spl; CURRENT is the 1-indexed cursor
@@ -12,4 +11,4 @@ _spl() {
         *)         compadd -- ${(f)out} ;;
     esac
 }
-_spl "$@"
+compdef _spl spl 2>/dev/null

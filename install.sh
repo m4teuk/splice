@@ -226,21 +226,37 @@ fetch_completion() {  # <file> <dest>
 
 install_completions() {
     local did=""
-    # bash
+    # bash + fish: standard per-user completion dirs are auto-loaded — just drop
+    # the file and it works on the next shell.
     local bdir="${BASH_COMPLETION_USER_DIR:-$HOME/.local/share/bash-completion}/completions"
     mkdir -p "$bdir" && fetch_completion spl.bash "$bdir/spl" && did="$did bash"
-    # fish
     if command -v fish >/dev/null 2>&1 || [ -d "$HOME/.config/fish" ]; then
         mkdir -p "$HOME/.config/fish/completions"
         fetch_completion spl.fish "$HOME/.config/fish/completions/spl.fish" && did="$did fish"
     fi
-    # zsh: drop the file and tell the user how to put it on fpath
-    local zdir="$HOME/.local/share/spl/zsh"
-    mkdir -p "$zdir" && fetch_completion spl.zsh "$zdir/_spl" && did="$did zsh"
     [ -n "$did" ] && say "Installed completions:$did"
-    case " $did " in *" zsh "*)
-        say "  zsh: add 'fpath=($zdir \$fpath)' before compinit in ~/.zshrc" ;;
-    esac
+
+    # zsh has no no-root auto-load dir, so drop a sourceable file and wire it into
+    # ~/.zshrc ourselves (idempotent, and works whether or not compinit ran).
+    local zfile="$HOME/.local/share/spl/completions/spl.zsh"
+    mkdir -p "$(dirname "$zfile")" || return 0
+    fetch_completion spl.zsh "$zfile" || return 0
+    local zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+    local marker="# spl shell completions (added by install.sh)"
+    if [ -f "$zshrc" ] && grep -qF "$marker" "$zshrc" 2>/dev/null; then
+        say "  zsh: already enabled in $zshrc"
+    elif [ -f "$zshrc" ] || [ "${SHELL##*/}" = "zsh" ]; then
+        {
+            printf '\n%s\n' "$marker"
+            printf 'if [ -f "%s" ]; then\n' "$zfile"
+            printf '  (( $+functions[compdef] )) || { autoload -Uz compinit && compinit }\n'
+            printf '  source "%s"\n' "$zfile"
+            printf 'fi\n'
+        } >> "$zshrc"
+        say "  zsh: enabled in $zshrc — restart your shell (or run: exec zsh)"
+    else
+        say "  zsh: to enable, add 'source $zfile' to your ~/.zshrc"
+    fi
 }
 
 # Reinstall just the shell completions (no binary): `SPL_COMPLETIONS_ONLY=1 bash install.sh`.
