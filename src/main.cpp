@@ -86,7 +86,6 @@ int main(int argc, char** argv) {
 
     if (cmd == "server") return cmd_server(argc - 1, argv + 1);
     if (cmd == "pair") return cmd_pair(argc - 1, argv + 1);
-    if (cmd == "status") return spl::peer::status_main();
     if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
     if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);

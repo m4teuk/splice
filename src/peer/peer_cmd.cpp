@@ -78,13 +78,13 @@ int do_stop() {
     return 0;
 }
 
-int do_status() {
+int do_status(bool verbose) {
     int fd = daemon_connect();
     if (fd < 0) {
         std::printf("daemon not running\n");
         return 1;
     }
-    std::string first = send_command(fd, "STATUS");
+    std::string first = send_command(fd, verbose ? "STATUS VERBOSE" : "STATUS");
     if (first != "OK") {
         spl::logf("spl peer status: %s", first.empty() ? "no reply" : first.c_str());
         ::close(fd);
@@ -228,7 +228,6 @@ int do_remove(const std::string& name) {
 
 }  // namespace
 
-int status_main() { return do_status(); }
 
 int peer_cmd_main(int argc, char** argv) {
     if (argc < 2) {
@@ -255,7 +254,7 @@ int peer_cmd_main(int argc, char** argv) {
 
     if (sub == "start") return do_start(argc, argv);
     if (sub == "stop") return do_stop();
-    if (sub == "status") return do_status();
+    if (sub == "status") return do_status(has_flag(argc, argv, "-v") || has_flag(argc, argv, "--verbose"));
     if (sub == "reset") return do_verb(argc, argv, "RESET");
 
     const auto a = plain_args(argc, argv);

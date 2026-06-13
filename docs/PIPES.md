@@ -167,7 +167,10 @@ user's job.
 
 ## Status
 
-`spl status` renders the `STATUS` verb. Per peer: the link state (relay or
+`spl status` renders the `STATUS` verb (send `STATUS VERBOSE` for `spl status -v`,
+which adds the peer's side, both ULA addresses, the session uid, our
+relay-observed external address, the tx/rx byte split per path, and the full
+candidate table — every probed address with alive/rtt/last-reply). Per peer: the link state (relay or
 direct, RTT, liveness — the path manager's snapshot), then the pipes:
 
 ```

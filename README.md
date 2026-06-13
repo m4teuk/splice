@@ -136,7 +136,8 @@ spl serve laptop report.pdf        # host a file; the peer fetches it when it wa
 spl get phone report.pdf           # fetch (writes ./report.pdf; -o DIR/FILE, -f, -b)
 spl chat laptop                    # talk: a terminal on each end of a pipe
 
-spl status                         # all peers: path (direct/relay), pipes, progress
+spl status [-v]                    # all peers: path (direct/relay), pipes, progress
+                                   #   -v adds addresses, per-path bytes, candidate table
 spl start | stop | reset           # daemon lifecycle (auto-started otherwise)
 spl ls | rename | remove           # manage paired connections
 spl register | open | close        # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)

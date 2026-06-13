@@ -16,6 +16,7 @@
 #include <sstream>
 #include <vector>
 
+#include "common/base64.h"
 #include "common/config.h"
 #include "common/log.h"
 #include "common/time.h"
@@ -140,7 +141,7 @@ class Daemon {
     void on_ctl_readable(int fd);
     void handle_cmd(int fd, const std::string& line);  // may adopt fd (PIPE)
     void drop_ctl(int fd, bool close_fd);
-    std::string render_status(Millis now);
+    std::string render_status(Millis now, bool verbose);
 
     DaemonOpts opts_;
     Endpoint server_{};
@@ -548,7 +549,10 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         g_dstop.store(true);
         return reply_close("OK\n");
     }
-    if (cmd == "STATUS") return reply_close("OK\n" + render_status(mono_ms()));
+    if (cmd == "STATUS") {
+        const bool verbose = t.size() > 1 && t[1] == "VERBOSE";
+        return reply_close("OK\n" + render_status(mono_ms(), verbose));
+    }
 
     if (cmd == "FORCE_RELAY") {  // debug/test: pin a session to the relay (1) or release (0)
         if (t.size() != 3) return reply_close("ERR usage: FORCE_RELAY <peer> <0|1>\n");
@@ -703,11 +707,27 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     reply_close("ERR unknown command '" + cmd + "'\n");
 }
 
-std::string Daemon::render_status(Millis now) {
+namespace {
+// Minimal IPv6 text (8 hex groups, no :: compression — enough for status).
+std::string ip6_str(const proto::Ip6& a) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%x:%x:%x:%x:%x:%x:%x:%x", (a[0] << 8) | a[1],
+                  (a[2] << 8) | a[3], (a[4] << 8) | a[5], (a[6] << 8) | a[7], (a[8] << 8) | a[9],
+                  (a[10] << 8) | a[11], (a[12] << 8) | a[13], (a[14] << 8) | a[15]);
+    return buf;
+}
+}  // namespace
+
+std::string Daemon::render_status(Millis now, bool verbose) {
     std::ostringstream o;
+    if (sessions_.empty()) o << "(no peer sessions)\n";
     for (auto& [name, s] : sessions_) {
         PathStatus ps = s.pm->status(now);
-        o << "PEER " << name << ": " << path_name(ps.active);
+
+        // --- header line ---
+        o << "PEER " << name;
+        if (verbose) o << "  (" << (s.rec.side ? "follower" : "leader") << ")";
+        o << ": " << path_name(ps.active);
         if (ps.active == Path::Direct) {
             for (const auto& c : ps.cands)
                 if (c.in_use) o << " via " << c.ep.to_string() << " ~" << c.rtt << "ms";
@@ -715,34 +735,70 @@ std::string Daemon::render_status(Millis now) {
         o << " | tx " << human_bytes(ps.tx_direct + ps.tx_relay) << " rx "
           << human_bytes(ps.rx_direct + ps.rx_relay) << "\n";
 
-        // The listening pipes: implicit diagnostic, persistent ones, live PIPEs.
-        std::vector<std::pair<std::string, std::string>> listening;  // name, "TYPE args"
-        listening.emplace_back(kDiagPipe, "ECHO");
+        // --- verbose session detail ---
+        if (verbose) {
+            o << "  link       " << path_name(ps.active)
+              << (ps.direct_confirmed ? " (a direct path is confirmed alive)"
+                                      : " (no direct path; on the relay)")
+              << "\n";
+            o << "  addresses  me " << ip6_str(s.own) << "  peer " << ip6_str(s.peer) << "\n";
+            o << "  uid        " << base64_encode(as_span(s.rec.uid)) << "\n";
+            o << "  external   "
+              << (ps.external ? ps.external->to_string() : std::string("(unknown)"))
+              << "   (our address as the relay sees us)\n";
+            o << "  traffic    tx: direct " << human_bytes(ps.tx_direct) << " / relay "
+              << human_bytes(ps.tx_relay) << "   rx: direct " << human_bytes(ps.rx_direct)
+              << " / relay " << human_bytes(ps.rx_relay) << "\n";
+            o << "  candidates (" << ps.cands.size() << "):\n";
+            for (const auto& c : ps.cands) {
+                o << "    " << (c.in_use ? "USE-> " : "      ") << c.ep.to_string() << "  ["
+                  << (c.lan ? "iface" : "ext") << "]  " << (c.alive ? "ALIVE" : "dead")
+                  << "  rtt " << (c.rtt ? std::to_string((long long)c.rtt) + "ms" : "?")
+                  << "  last reply "
+                  << (c.reply_age >= 0 ? std::to_string((long long)c.reply_age) + "ms ago"
+                                       : "never")
+                  << "\n";
+            }
+        }
+
+        // --- listening pipes: implicit diagnostic, persistent ones, live PIPEs ---
+        struct Listed {
+            std::string name, desc;
+            uint32_t limit = 0, started = 0;
+        };
+        std::vector<Listed> listening;
+        listening.push_back({kDiagPipe, "ECHO", 0, 0});
         if (store_) {
             for (const auto& r : store_->list_pipes(name)) {
                 std::string d = r.type;
                 for (const auto& a : r.args) d += " " + a;
-                listening.emplace_back(r.name, d);
+                listening.push_back({r.name, d, 0, 0});
             }
         }
-        for (const auto& [rname, reg] : s.pipe_regs) listening.emplace_back(rname, "PIPE");
+        for (const auto& [rname, reg] : s.pipe_regs)
+            listening.push_back({rname, "PIPE", reg.limit, reg.started});
 
         o << "  LISTENING\n";
-        for (const auto& [rname, desc] : listening) {
+        for (const auto& l : listening) {
             uint64_t active = 0;
             for (const auto& [id, in] : s.insts)
-                if (in->inbound && in->reg == rname) ++active;
-            const uint64_t fin = s.finished.count(rname) ? s.finished.at(rname) : 0;
-            o << "    " << rname << "  " << desc << "  (" << fin << " finished, " << active
-              << " active)\n";
+                if (in->inbound && in->reg == l.name) ++active;
+            const uint64_t fin = s.finished.count(l.name) ? s.finished.at(l.name) : 0;
+            o << "    " << l.name << "  " << l.desc << "  (" << fin << " finished, " << active
+              << " active)";
+            if (verbose && l.limit) o << "  [limit " << l.started << "/" << l.limit << "]";
+            o << "\n";
             for (const auto& [id, in] : s.insts) {
-                if (!in->inbound || in->reg != rname) continue;
-                o << "      #" << id << "  up " << human_bytes(in->up) << " down "
-                  << human_bytes(in->down);
+                if (!in->inbound || in->reg != l.name) continue;
+                o << "      #" << id;
+                if (verbose) o << "  " << in->type << (in->open ? " open" : " handshaking");
+                o << "  up " << human_bytes(in->up) << " down " << human_bytes(in->down);
                 if (in->local) o << " | " << in->local->describe();
                 o << "\n";
             }
         }
+
+        // --- our outbound instances (created by OPEN) ---
         bool any_out = false;
         for (const auto& [id, in] : s.insts)
             if (!in->inbound) any_out = true;
@@ -750,9 +806,12 @@ std::string Daemon::render_status(Millis now) {
             o << "  RUNNING\n";
             for (const auto& [id, in] : s.insts) {
                 if (in->inbound) continue;
-                o << "    #" << id << "  -> " << name << ":" << in->want << "  " << in->type
-                  << (in->open ? "" : " (connecting)") << "  up " << human_bytes(in->up)
-                  << " down " << human_bytes(in->down);
+                o << "    #" << id << "  -> " << name << ":" << in->want << "  " << in->type;
+                if (in->open)
+                    o << (verbose ? " open" : "");
+                else
+                    o << (in->wait ? " (waiting)" : " (connecting)");
+                o << "  up " << human_bytes(in->up) << " down " << human_bytes(in->down);
                 if (in->local) o << " | " << in->local->describe();
                 o << "\n";
             }
