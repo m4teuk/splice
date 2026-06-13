@@ -48,10 +48,13 @@ int do_start(int argc, char** argv) {
     bool foreground = false;
     for (int i = 2; i < argc; ++i)
         if (std::string(argv[i]) == "--foreground") foreground = true;
-    const DaemonOpts opts = daemon_opts_from(argc, argv);
+    DaemonOpts opts = daemon_opts_from(argc, argv);
+    opts.sticky = true;  // an explicitly-started daemon stays up until `spl stop`
     if (foreground) return daemon_run(opts);
     if (daemon_request("PING") == "OK") {
-        std::printf("daemon already running (%s)\n", daemon_socket_path().c_str());
+        // Already running (perhaps auto-started); make sure it won't auto-stop.
+        daemon_request("STICKY");
+        std::printf("daemon already running, kept up (%s)\n", daemon_socket_path().c_str());
         return 0;
     }
     std::string err;
@@ -59,7 +62,7 @@ int do_start(int argc, char** argv) {
         spl::logf("spl start: %s", err.c_str());
         return 1;
     }
-    std::printf("daemon started (%s)\n", daemon_socket_path().c_str());
+    std::printf("daemon started, stays up until `spl stop` (%s)\n", daemon_socket_path().c_str());
     return 0;
 }
 

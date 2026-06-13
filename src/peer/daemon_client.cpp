@@ -151,8 +151,8 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
     const Millis deadline = mono_ms() + 5000;
     while (mono_ms() < deadline) {
         if (daemon_request("PING") == "OK") {
-            clog("daemon up (pid %d, log %s/daemon.log)", static_cast<int>(pid),
-                 runtime_dir().c_str());
+            clog("daemon up (pid %d%s)", static_cast<int>(pid),
+                 opts.sticky ? "" : "; auto-stops when idle, `spl start` to keep it");
             return true;
         }
         struct timespec ts {0, 50 * 1000 * 1000};

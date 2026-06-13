@@ -223,6 +223,10 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)
 
+    add_test(NAME lifecycle_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/lifecycle_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(lifecycle_integration PROPERTIES TIMEOUT 90)
+
     add_test(NAME chat_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)
     set_tests_properties(chat_integration PROPERTIES TIMEOUT 90)

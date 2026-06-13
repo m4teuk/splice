@@ -40,6 +40,10 @@ constexpr Millis kDialDeadlineMs = 15000;
 // goes away, so a follow-up command reconnects instantly. After this it goes
 // dormant: no relay traffic, no probing.
 constexpr Millis kWarmMs = 5 * 60 * 1000;
+// A non-sticky (auto-started) daemon exits after this long with nothing
+// registered and no instances running, so a casual command doesn't leave a
+// daemon behind forever. `spl start` makes it sticky (never auto-stops).
+constexpr Millis kIdleStopMs = 2 * 60 * 1000;
 
 std::atomic<bool> g_dstop{false};
 void on_dsig(int) { g_dstop.store(true); }
@@ -160,6 +164,9 @@ class Daemon {
     std::string render_status_raw();  // machine-readable, tab-separated (completion/scripting)
 
     DaemonOpts opts_;
+    bool sticky_ = false;        // never auto-stop (set by `spl start`)
+    Millis idle_stop_ms_ = kIdleStopMs;  // SPL_IDLE_STOP_MS overrides (tests)
+    Millis last_busy_ = 0;       // last tick any session had a pipe registered/running
     Endpoint server_{};
     std::optional<Store> store_;
     net::Poller poller_;
@@ -377,33 +384,43 @@ void Daemon::on_tunnel_gone(Session& s, uint64_t id) {
 void Daemon::dial(Session& s, Instance& in, Millis now) {
     in.dialing = true;
     in.next_dial = now + kDialRetryMs;
-    Instance* ip = &in;
     Session* sp = &s;
     const uint64_t id = in.id;
     const std::string sname = s.name;
+    // Look the instance up by id in the callbacks (never capture the Instance*):
+    // tick() may expire it at its deadline while a connect is still in flight, so
+    // the pointer can be gone by the time lwIP resolves the connect.
     spl::logf("[daemon] #%llu dialing %s:%s (%s)", (unsigned long long)id, sname.c_str(),
               in.want.c_str(), in.wait ? "wait" : "once");
     s.ns->connect(
         s.peer, kPipePort,
-        [this, sp, ip, id, sname](TcpConn* c) {
-            ip->conn = c;
-            ip->dialing = false;
+        [this, sp, id, sname](TcpConn* c) {
+            auto it = sp->insts.find(id);
+            if (it == sp->insts.end()) {  // instance already expired/closed
+                c->close();
+                return;
+            }
+            Instance& in = *it->second;
+            in.conn = c;
+            in.dialing = false;
             c->on_recv = [this, sp, id](ByteSpan b) { on_tunnel_data(*sp, id, b); };
             c->on_closed = [this, sp, id] { on_tunnel_gone(*sp, id); };
             c->on_error = [this, sp, id] { on_tunnel_gone(*sp, id); };
-            c->send(as_span(ip->want + "\n"));
+            c->send(as_span(in.want + "\n"));
             // A meta-request gets no OK handshake: the reply bytes follow
             // immediately, so bind the collector now.
-            if (ip->meta) {
-                ip->open = true;
-                bind_end(*sp, *ip);
+            if (in.meta) {
+                in.open = true;
+                bind_end(*sp, in);
             }
             spl::logf("[daemon] #%llu connected to %s, requested '%s'", (unsigned long long)id,
-                      sname.c_str(), ip->want.c_str());
+                      sname.c_str(), in.want.c_str());
         },
-        [ip] {  // this attempt failed; tick re-dials until the deadline
-            ip->conn = nullptr;
-            ip->dialing = false;
+        [sp, id] {  // this attempt failed; tick re-dials until the deadline
+            auto it = sp->insts.find(id);
+            if (it == sp->insts.end()) return;
+            it->second->conn = nullptr;
+            it->second->dialing = false;
         });
 }
 
@@ -491,11 +508,13 @@ void Daemon::unregister_pipe(Session& s, const std::string& name) {
 }
 
 void Daemon::tick(Millis now) {
+    bool any_busy = false;
     for (auto& [name, s] : sessions_) {
         // Activity gate: full disco only while something is listening or running,
         // or within the warm window after the last one. Otherwise the session
         // goes dormant (no relay traffic, no probing).
         const bool busy = !s.pipe_regs.empty() || s.persisted_pipes > 0 || !s.insts.empty();
+        any_busy |= busy;
         if (busy) s.last_active = now;
         const bool warm = busy || (s.last_active && now - s.last_active < kWarmMs);
         s.pm->set_active(warm);
@@ -517,11 +536,12 @@ void Daemon::tick(Millis now) {
         std::vector<uint64_t> expired;
         for (auto& [id, inp] : s.insts) {
             Instance& in = *inp;
-            // Outbound dial retries (the peer's daemon may still be warming up).
-            if (!in.inbound && !in.open && !in.conn && !in.dialing) {
+            // Outbound, not yet spliced: enforce the deadline (even mid-dial — a
+            // dial to a down peer can hang since WG can't handshake), else re-dial.
+            if (!in.inbound && !in.open && !in.conn) {
                 if (now >= in.dial_deadline)
                     expired.push_back(id);
-                else if (now >= in.next_dial)
+                else if (!in.dialing && now >= in.next_dial)
                     dial(s, in, now);
             }
             // Resume client sockets paused for backpressure (owned fds only).
@@ -531,6 +551,14 @@ void Daemon::tick(Millis now) {
             if (in.local) in.local->tick(now);
         }
         for (uint64_t id : expired) close_instance(s, id, false);
+    }
+
+    // Auto-stop: a non-sticky daemon exits once it's been idle long enough.
+    if (any_busy) last_busy_ = now;
+    if (!sticky_ && now - last_busy_ >= idle_stop_ms_) {
+        spl::logf("[daemon] auto-stopping after %llds idle (nothing registered or running)",
+                  (long long)(idle_stop_ms_ / 1000));
+        g_dstop.store(true);
     }
 }
 
@@ -589,6 +617,10 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
     }
     if (cmd == "STOP") {
         g_dstop.store(true);
+        return reply_close("OK\n");
+    }
+    if (cmd == "STICKY") {  // `spl start` against an already-running daemon: keep it up
+        sticky_ = true;
         return reply_close("OK\n");
     }
     if (cmd == "STATUS") {
@@ -915,6 +947,8 @@ std::string Daemon::render_status_raw() {
 // ---------------- run / entry ----------------
 
 int Daemon::run() {
+    sticky_ = opts_.sticky;
+    if (const char* v = std::getenv("SPL_IDLE_STOP_MS")) idle_stop_ms_ = std::atoll(v);
     store_ = Store::open(nullptr);
     auto srv = net::resolve(opts_.server, opts_.port);
     if (!srv) {
@@ -951,8 +985,10 @@ int Daemon::run() {
             if (!start_session(rec, &err))
                 spl::logf("daemon: session %s: %s", rec.name.c_str(), err.c_str());
     }
-    spl::logf("daemon: up, %zu peer session(s), socket %s", sessions_.size(), path.c_str());
+    spl::logf("daemon: up (%s), %zu peer session(s), socket %s",
+              sticky_ ? "sticky" : "auto-stops when idle", sessions_.size(), path.c_str());
 
+    last_busy_ = mono_ms();  // don't auto-stop before the first command arrives
     poller_.set(lfd_, [this] { accept_ctl(); });
     poller_.run(g_dstop, [this](Millis now) { tick(now); });
 
