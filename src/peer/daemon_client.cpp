@@ -5,6 +5,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <cstdarg>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +14,16 @@
 #include "common/time.h"
 
 namespace spl::peer {
+
+void clog(const char* fmt, ...) {
+    const bool tty = ::isatty(STDERR_FILENO);
+    std::fputs(tty ? "\033[34m[spl] " : "[spl] ", stderr);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    std::fputs(tty ? "\033[0m\n" : "\n", stderr);
+}
 
 namespace {
 
@@ -80,16 +91,15 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
         const std::string v = daemon_request("VERSION");  // "OK <sha>" on a current daemon
         const std::string want = std::string("OK ") + SPL_GIT_SHA;
         if (v != want) {
-            spl::logf("[spl] WARNING: the running daemon is a different build (%s vs this %s).",
-                      v.empty() ? "old/unknown" : v.c_str(), SPL_GIT_SHA);
-            spl::logf("[spl]   run `spl peer stop` to restart it on the new binary.");
+            clog("WARNING: the running daemon is a different build (%s vs this %s).",
+                 v.empty() ? "old/unknown" : v.c_str(), SPL_GIT_SHA);
+            clog("  run `spl peer stop` to restart it on the new binary.");
         } else {
-            spl::logf("[spl] daemon already running (%s)", daemon_socket_path().c_str());
+            clog("daemon already running (%s)", daemon_socket_path().c_str());
         }
         return true;
     }
-    spl::logf("[spl] no daemon running; starting one (relay %s:%u)", opts.server.c_str(),
-              opts.port);
+    clog("no daemon running; starting one (relay %s:%u)", opts.server.c_str(), opts.port);
 
     pid_t pid = ::fork();
     if (pid < 0) {
@@ -115,8 +125,8 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
     const Millis deadline = mono_ms() + 5000;
     while (mono_ms() < deadline) {
         if (daemon_request("PING") == "OK") {
-            spl::logf("[spl] daemon up (pid %d, log %s/daemon.log)", static_cast<int>(pid),
-                      runtime_dir().c_str());
+            clog("daemon up (pid %d, log %s/daemon.log)", static_cast<int>(pid),
+                 runtime_dir().c_str());
             return true;
         }
         struct timespec ts {0, 50 * 1000 * 1000};

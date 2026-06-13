@@ -68,6 +68,7 @@ int do_start(int argc, char** argv) {
 }
 
 int do_stop() {
+    clog("-> STOP");
     const std::string r = daemon_request("STOP");
     if (r.empty()) {
         std::printf("daemon not running\n");
@@ -103,8 +104,10 @@ int do_verb(int argc, char** argv, const std::string& line) {
         spl::logf("spl peer: %s", err.c_str());
         return 1;
     }
+    clog("-> %s", line.c_str());
     const std::string r = daemon_request(line);
     if (r.rfind("OK", 0) == 0) {
+        clog("<- %s", r.c_str());
         if (r.size() > 3) std::printf("%s\n", r.substr(3).c_str());
         return 0;
     }
@@ -124,14 +127,14 @@ int do_pipe_verb(int argc, char** argv, const std::string& line) {
         spl::logf("spl peer: cannot reach the daemon");
         return 1;
     }
-    spl::logf("[spl] %s", line.c_str());
+    clog("-> %s", line.c_str());
     const std::string r = send_command(fd, line);
     if (r.rfind("OK", 0) != 0) {
         spl::logf("spl peer: %s", r.empty() ? "no reply from daemon" : r.c_str());
         ::close(fd);
         return 1;
     }
-    spl::logf("[spl] connected; bridging stdin/stdout (^D to end)");
+    clog("connected; bridging stdin/stdout (^D to end)");
     int rc = bridge_stdio(fd);
     ::close(fd);
     return rc;

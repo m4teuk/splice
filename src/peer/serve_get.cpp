@@ -116,14 +116,15 @@ int serve_main(int argc, char** argv) {
         spl::logf("spl serve: %s", err.c_str());
         return 1;
     }
-    spl::logf("[spl] registering '%s' (SHARE_FILE %s) for %s...", name.c_str(), path.c_str(),
-              peer.c_str());
+    clog("registering '%s' (SHARE_FILE %s) for %s...", name.c_str(), path.c_str(), peer.c_str());
     const std::string r = daemon_request("REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) +
                                          " SHARE_FILE " + ctl_encode(path));
     if (r != "OK") {
         spl::logf("spl serve: %s", r.empty() ? "no reply from daemon" : r.c_str());
         return 1;
     }
+    clog("registered; the daemon serves this until `spl peer unregister %s %s`", peer.c_str(),
+         name.c_str());
     std::printf("serving '%s' to %s as '%s'\n", path.c_str(), peer.c_str(), name.c_str());
     return 0;
 }
@@ -143,8 +144,10 @@ int get_main(int argc, char** argv) {
         return 1;
     }
 
-    if (o.background) {  // daemon-owned GET_FILE; watch it in `spl peer status`
+    if (o.background) {  // daemon-owned GET_FILE; watch it in `spl status`
         const std::string target = abspath(o.out);  // "" -> cwd (a directory)
+        clog("opening '%s' on %s as a background GET_FILE -> %s", pipe.c_str(), peer.c_str(),
+             target.empty() ? "(cwd)" : target.c_str());
         std::string line = "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " GET_FILE " +
                            ctl_encode(target);
         if (o.overwrite) line += " OVERWRITE";
@@ -153,7 +156,8 @@ int get_main(int argc, char** argv) {
             spl::logf("spl get: %s", r.empty() ? "no reply from daemon" : r.c_str());
             return 1;
         }
-        std::printf("receiving in the background as instance #%s (see `spl peer status`)\n",
+        clog("started as instance #%s; watch it with `spl status`", r.substr(3).c_str());
+        std::printf("receiving in the background as instance #%s (see `spl status`)\n",
                     r.substr(3).c_str());
         return 0;
     }
@@ -164,7 +168,7 @@ int get_main(int argc, char** argv) {
         spl::logf("spl get: cannot reach the daemon");
         return 1;
     }
-    spl::logf("[spl] opening '%s' on %s...", pipe.c_str(), peer.c_str());
+    clog("opening '%s' on %s...", pipe.c_str(), peer.c_str());
     const std::string r =
         send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(pipe) + " PIPE");
     if (r.rfind("OK", 0) != 0) {
@@ -172,7 +176,7 @@ int get_main(int argc, char** argv) {
         ::close(fd);
         return 1;
     }
-    spl::logf("[spl] connected; waiting for data...");
+    clog("connected; waiting for the file header...");
 
     const bool tty = ::isatty(STDERR_FILENO);
     std::string hdr, path, name;
@@ -205,6 +209,8 @@ int get_main(int argc, char** argv) {
                     spl::logf("spl get: cannot write '%s.part'", path.c_str());
                     break;
                 }
+                clog("receiving '%s' (%s) -> %s", name.c_str(), human_bytes(size).c_str(),
+                     path.c_str());
             } else {
                 if (hdr.size() >= 512) {
                     spl::logf("spl get: malformed stream");

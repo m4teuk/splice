@@ -9,6 +9,10 @@
 
 namespace spl::peer {
 
+// Verbose client trace, always on, to stderr — blue and "[spl] "-prefixed when
+// stderr is a TTY, plain otherwise (so logs/pipes stay clean). printf-style.
+void clog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // Connect to the daemon socket; -1 if it isn't running.
 int daemon_connect();
 

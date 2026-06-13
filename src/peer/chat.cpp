@@ -62,21 +62,19 @@ int chat_main(int argc, char** argv) {
     // starts first just sits until the other side shows up).
     const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat PIPE"
                                     : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
-    spl::logf("[spl] %s chat with %s...", leader ? "hosting" : "joining", name.c_str());
+    clog("%s chat with %s...", leader ? "hosting" : "joining", name.c_str());
     const std::string r = send_command(fd, verb);
     if (r.rfind("OK", 0) != 0) {
         spl::logf("spl chat: %s", r.empty() ? "no reply from daemon" : r.c_str());
         ::close(fd);
         return 1;
     }
-    if (::isatty(STDERR_FILENO))
-        std::fprintf(stderr, leader ? "[chat] hosting; waiting for %s (^D to end)\n"
-                                    : "[chat] waiting for %s (^D to end)\n",
-                     name.c_str());
+    clog(leader ? "hosting; waiting for %s (^D to end)" : "waiting for %s (^D to end)",
+         name.c_str());
 
     const int rc = bridge_stdio(fd, /*exit_on_stdin_eof=*/true);
     ::close(fd);
-    if (::isatty(STDERR_FILENO)) std::fprintf(stderr, "[chat] closed\n");
+    clog("chat closed");
     return rc;
 }
 
