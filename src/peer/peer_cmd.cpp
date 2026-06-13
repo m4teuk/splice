@@ -81,16 +81,15 @@ int do_status(bool verbose) {
         std::printf("daemon not running\n");
         return 1;
     }
-    std::string first = send_command(fd, verbose ? "STATUS VERBOSE" : "STATUS");
-    if (first != "OK") {
-        spl::logf("spl peer status: %s", first.empty() ? "no reply" : first.c_str());
+    const std::string first = send_command(fd, verbose ? "STATUS VERBOSE" : "STATUS");
+    if (!ok_reply(first)) {
+        daemon_fail("spl status", first);
         ::close(fd);
         return 1;
     }
-    char buf[4096];
-    ssize_t n;
-    while ((n = ::read(fd, buf, sizeof(buf))) > 0) fwrite(buf, 1, static_cast<size_t>(n), stdout);
+    const std::string body = read_to_eof(fd);
     ::close(fd);
+    fwrite(body.data(), 1, body.size(), stdout);
     return 0;
 }
 

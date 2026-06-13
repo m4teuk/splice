@@ -79,6 +79,16 @@ std::string send_command(int fd, const std::string& line) {
     return read_line(fd);
 }
 
+std::string read_to_eof(int fd) {
+    std::string body, buf(4096, '\0');
+    for (;;) {
+        ssize_t n = ::read(fd, buf.data(), buf.size());
+        if (n <= 0) break;  // EOF or timeout
+        body.append(buf.data(), static_cast<size_t>(n));
+    }
+    return body;
+}
+
 std::string daemon_request(const std::string& line) {
     int fd = daemon_connect();
     if (fd < 0) return "";
@@ -94,12 +104,7 @@ std::string daemon_list(const std::string& peer, int timeout_ms) {
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     const std::string cmd = "LIST " + peer + "\n";
     spl::write_all(fd, cmd.data(), cmd.size());
-    std::string body, buf(4096, '\0');
-    for (;;) {
-        ssize_t n = ::read(fd, buf.data(), buf.size());
-        if (n <= 0) break;  // EOF or timeout
-        body.append(buf.data(), static_cast<size_t>(n));
-    }
+    std::string body = read_to_eof(fd);
     ::close(fd);
     return body;
 }

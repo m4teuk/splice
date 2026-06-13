@@ -73,15 +73,8 @@ std::vector<std::string> status_raw_lines() {
     std::vector<std::string> out;
     int fd = daemon_connect();
     if (fd < 0) return out;
-    std::string first = send_command(fd, "STATUS RAW");
-    if (first.rfind("OK", 0) == 0) {
-        std::string body, buf(4096, '\0');
-        for (;;) {
-            ssize_t n = ::read(fd, buf.data(), buf.size());
-            if (n <= 0) break;
-            body.append(buf.data(), static_cast<size_t>(n));
-        }
-        std::istringstream is(body);
+    if (ok_reply(send_command(fd, "STATUS RAW"))) {
+        std::istringstream is(read_to_eof(fd));
         std::string line;
         while (std::getline(is, line))
             if (!line.empty()) out.push_back(line);

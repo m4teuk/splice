@@ -90,10 +90,8 @@ class PathManager {
 
     bool send_inner(ByteSpan ip_packet);  // encapsulate + send over the active path
 
-    Path tx_path() const { return tx_path_; }
-    bool direct_confirmed() const { return direct_confirmed_; }
     bool active() const { return active_; }
-    PathStatus status(Millis now) const;
+    PathStatus status(Millis now) const;  // full snapshot (path, candidates, byte counters)
 
     // Activity gate: when inactive, tick() initiates no traffic at all (the peer
     // session goes dormant). The daemon sets this from whether the peer has a

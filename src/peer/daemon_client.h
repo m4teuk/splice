@@ -36,6 +36,9 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err);
 // PIPE-typed commands whose connection becomes the byte stream).
 std::string send_command(int fd, const std::string& line);
 
+// Read `fd` until EOF (or recv timeout) and return everything read.
+std::string read_to_eof(int fd);
+
 // Ask the running daemon what `peer` serves us (the LIST verb). Returns the raw
 // reply (newline-separated pipe names), or "" if no daemon / timeout. Never
 // starts the daemon. `timeout_ms` bounds the wait so completion stays snappy.
