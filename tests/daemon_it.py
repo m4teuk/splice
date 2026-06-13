@@ -106,7 +106,7 @@ def main():
 
         # reset clears every pipe
         assert spl(fenv, "reset").returncode == 0
-        out = spl(fenv, "peer", "status").stdout
+        out = spl(fenv, "status").stdout
         assert "echo2" not in out, out
         assert "LISTENING" not in out, out
         print("  reset OK")

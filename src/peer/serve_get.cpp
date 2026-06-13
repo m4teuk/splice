@@ -122,7 +122,7 @@ int serve_main(int argc, char** argv) {
         daemon_fail("spl serve", r);
         return 1;
     }
-    clog("registered; the daemon serves this until `spl peer unregister %s %s`", peer.c_str(),
+    clog("registered; the daemon serves this until `spl unregister %s %s`", peer.c_str(),
          name.c_str());
     std::printf("serving '%s' to %s as '%s'\n", path.c_str(), peer.c_str(), name.c_str());
     return 0;

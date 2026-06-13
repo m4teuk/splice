@@ -198,8 +198,7 @@ aborts our own fetch.
 ## Lifecycle
 
 - `spl start` / `spl stop` run and kill the daemon explicitly; any client
-  command auto-starts it when the socket is absent. (The `peer` keyword is an
-  accepted-but-optional prefix on all of these: `spl peer start` still works.)
+  command auto-starts it when the socket is absent.
 - **Per-peer activity gating.** A peer session is *active* — registering with the
   relay, running whereami/CALLME, probing direct paths — only while it has a pipe
   listening (a live `PIPE` registration or a persisted one) or a running

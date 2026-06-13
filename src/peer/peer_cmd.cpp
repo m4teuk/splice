@@ -20,18 +20,17 @@ namespace spl::peer {
 namespace {
 
 void usage() {
-    // These all work as `spl <sub>`; the `peer` prefix is also accepted.
     spl::logf(
         "usage:\n"
-        "  spl ls | list                 list paired connections\n"
+        "  spl ls [peer]                 list paired peers (or what <peer> serves you)\n"
         "  spl rename <old> <new>        rename a connection\n"
         "  spl remove <name>             delete a connection\n"
         "  spl add [pair options]        pair with a new peer (alias for `spl pair`)\n"
         "\n"
-        "  spl start [--foreground] [--server H --port N]   run the daemon\n"
+        "  spl start [--foreground] [--server H --port N]   run the daemon (stays up)\n"
         "  spl stop                      stop the daemon\n"
-        "  spl status                    show sessions and pipes\n"
-        "  spl reset                     drop all pipes (diagnostic stays)\n"
+        "  spl status [-v]               show sessions and pipes\n"
+        "  spl reset                     drop all registered pipes\n"
         "\n"
         "  spl register <peer> <pipe> [LIMIT n] <TYPE> [args…]   host a named pipe\n"
         "  spl unregister <peer> <pipe>\n"
@@ -57,7 +56,7 @@ int do_start(int argc, char** argv) {
     }
     std::string err;
     if (!ensure_daemon(opts, &err)) {
-        spl::logf("spl peer start: %s", err.c_str());
+        spl::logf("spl start: %s", err.c_str());
         return 1;
     }
     std::printf("daemon started (%s)\n", daemon_socket_path().c_str());
@@ -97,13 +96,13 @@ int do_status(bool verbose) {
 int do_verb(int argc, char** argv, const std::string& line) {
     std::string err;
     if (!ensure_daemon(daemon_opts_from(argc, argv), &err)) {
-        spl::logf("spl peer: %s", err.c_str());
+        spl::logf("spl: %s", err.c_str());
         return 1;
     }
     clog("-> %s", line.c_str());
     const std::string r = daemon_request(line);
     if (!ok_reply(r)) {
-        daemon_fail("spl peer", r);
+        daemon_fail("spl", r);
         return 1;
     }
     clog("<- %s", r.c_str());
@@ -115,18 +114,18 @@ int do_verb(int argc, char** argv, const std::string& line) {
 int do_pipe_verb(int argc, char** argv, const std::string& line) {
     std::string err;
     if (!ensure_daemon(daemon_opts_from(argc, argv), &err)) {
-        spl::logf("spl peer: %s", err.c_str());
+        spl::logf("spl: %s", err.c_str());
         return 1;
     }
     int fd = daemon_connect();
     if (fd < 0) {
-        spl::logf("spl peer: cannot reach the daemon");
+        spl::logf("spl: cannot reach the daemon");
         return 1;
     }
     clog("-> %s", line.c_str());
     const std::string r = send_command(fd, line);
     if (!ok_reply(r)) {
-        daemon_fail("spl peer", r);
+        daemon_fail("spl", r);
         ::close(fd);
         return 1;
     }

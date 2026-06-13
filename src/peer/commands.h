@@ -1,9 +1,8 @@
 // The one place the CLI command set is declared. main.cpp routes on it and the
 // completion engine offers it, so the two can't drift apart.
 //
-//   peer_sub = reachable as both `spl <name>` and `spl peer <name>`
-//              (daemon/pipe/connection management; handled by peer_cmd_main)
-//   alias    = dispatchable but hidden from completion (e.g. `list`, `rm`)
+//   managed = handled by peer_cmd_main (daemon / pipe / connection management)
+//   alias   = dispatchable but hidden from completion (e.g. `list`, `rm`)
 #pragma once
 
 #include <string_view>
@@ -12,7 +11,7 @@ namespace spl::peer {
 
 struct CommandDef {
     std::string_view name;
-    bool peer_sub;
+    bool managed;
     bool alias;
 };
 
@@ -26,9 +25,9 @@ inline constexpr CommandDef kCommands[] = {
     {"rm", true, true},
 };
 
-inline bool is_peer_subcommand(std::string_view name) {
+inline bool is_managed_command(std::string_view name) {
     for (const auto& c : kCommands)
-        if (c.peer_sub && c.name == name) return true;
+        if (c.managed && c.name == name) return true;
     return false;
 }
 

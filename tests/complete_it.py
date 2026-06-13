@@ -30,8 +30,9 @@ def main():
 
         # commands (no daemon needed)
         cmds = comp(lenv, 1, "spl")
-        for c in ("serve", "get", "chat", "register", "close", "status", "peer"):
+        for c in ("serve", "get", "chat", "register", "close", "status"):
             assert c in cmds, f"missing command {c}: {cmds}"
+        assert "peer" not in cmds, "the 'peer' prefix should be gone"
         print("  commands OK")
 
         # peer names from the store (no daemon)
@@ -48,9 +49,6 @@ def main():
         assert comp(lenv, 5, "spl", "register", "thefollower", "x", "ECHO") == []
         print("  types + type-args OK")
 
-        # peer prefix is transparent
-        assert comp(lenv, 3, "spl", "peer", "get") == comp(lenv, 2, "spl", "get")
-        print("  peer-prefix transparency OK")
 
         # daemon-backed: instance ids for `close`
         for env in (lenv, fenv):

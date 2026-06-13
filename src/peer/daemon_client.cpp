@@ -119,7 +119,7 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
         if (v != want) {
             clog("WARNING: the running daemon is a different build (%s vs this %s).",
                  v.empty() ? "old/unknown" : v.c_str(), SPL_GIT_SHA);
-            clog("  run `spl peer stop` to restart it on the new binary.");
+            clog("  run `spl stop` to restart it on the new binary.");
         } else {
             clog("daemon already running (%s)", daemon_socket_path().c_str());
         }

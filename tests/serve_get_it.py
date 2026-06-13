@@ -72,13 +72,13 @@ def main():
         got2 = os.path.join(dl2, "blob with spaces.bin")
         while time.time() < deadline and not os.path.exists(got2):
             time.sleep(0.3)
-        assert os.path.exists(got2), spl(lenv, "peer", "status").stdout
+        assert os.path.exists(got2), spl(lenv, "status").stdout
         assert sha(got2) == sha(src), "background content mismatch"
         print("  background get OK")
 
         # the serve survives a daemon restart (registration is on disk)
-        assert spl(fenv, "peer", "stop").returncode == 0
-        assert spl(fenv, "peer", "start", *largs).returncode == 0
+        assert spl(fenv, "stop").returncode == 0
+        assert spl(fenv, "start", *largs).returncode == 0
         dl3 = tempfile.mkdtemp()
         deadline = time.time() + 30
         while time.time() < deadline:
@@ -96,7 +96,7 @@ def main():
         print("  unknown pipe fails cleanly")
 
         for env in (lenv, fenv):
-            spl(env, "peer", "stop")
+            spl(env, "stop")
         print("serve/get integration: all OK")
     finally:
         stop(server)

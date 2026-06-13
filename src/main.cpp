@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <cstring>
 #include <string_view>
-#include <vector>
 
 #include "native/native.h"
 #include "peer/chat.h"
@@ -93,16 +92,9 @@ int main(int argc, char** argv) {
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
-    // `spl peer <sub>` and the promoted top-level forms `spl <sub>` are the same
-    // commands — the `peer` keyword is an accepted-but-optional prefix.
-    if (cmd == "peer" || spl::peer::is_peer_subcommand(cmd)) {
-        // Hand peer_cmd_main an argv that always starts with "peer" so its own
-        // dispatch is uniform, whether or not the user typed the keyword.
-        std::vector<char*> a;
-        a.push_back(const_cast<char*>("peer"));
-        for (int i = (cmd == "peer" ? 2 : 1); i < argc; ++i) a.push_back(argv[i]);
-        return cmd_peer(static_cast<int>(a.size()), a.data());
-    }
+    // The daemon / pipe / connection management commands (start, stop, status,
+    // ls, register, open, …) are all handled by peer_cmd_main.
+    if (spl::peer::is_managed_command(cmd)) return cmd_peer(argc, argv);
 
     std::fprintf(stderr, "spl: unknown command '%.*s'\n",
                  static_cast<int>(cmd.size()), cmd.data());

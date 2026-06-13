@@ -90,7 +90,7 @@ def main():
         for cfg, run in ((ld, lrun), (fd, frun)):
             env = dict(os.environ, SPL_CONFIG_DIR=cfg, SPL_RUNTIME_DIR=run,
                        SPL_FORCE_RELAY="1")
-            r = subprocess.run([SPL, "peer", "start", *largs], env=env,
+            r = subprocess.run([SPL, "start", *largs], env=env,
                                capture_output=True, text=True, timeout=30)
             assert r.returncode == 0, r.stdout + r.stderr
 

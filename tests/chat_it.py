@@ -108,7 +108,7 @@ def main():
             stop(p)
         for env in (lenv, fenv):
             if env:
-                subprocess.run([SPL, "peer", "stop"], env=env,
+                subprocess.run([SPL, "stop"], env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stop(srv)
 

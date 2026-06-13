@@ -71,7 +71,7 @@ def main():
         # 3. a lossy path: restart both daemons with SPL_LOSS; the registrations
         # persist, TCP retransmits through the dropped packets.
         for env in (lenv, fenv):
-            spl(env, "peer", "stop")
+            spl(env, "stop")
         lenv["SPL_LOSS"] = fenv["SPL_LOSS"] = "0.03"
         lossy = os.path.join(work, "lossy.bin")
         with open(lossy, "wb") as f:
@@ -89,7 +89,7 @@ def main():
     finally:
         for env in (lenv, fenv):
             if env:
-                subprocess.run([SPL, "peer", "stop"], env=env,
+                subprocess.run([SPL, "stop"], env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stop(srv)
 

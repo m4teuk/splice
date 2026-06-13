@@ -25,12 +25,11 @@ void emit(const std::vector<std::string>& cands) {
     for (const auto& c : cands) std::printf("%s\n", c.c_str());
 }
 
-// The completable commands: every non-alias command, plus the `peer` prefix.
+// The completable commands: every non-alias command.
 std::vector<std::string> command_names() {
     std::vector<std::string> v;
     for (const auto& c : kCommands)
         if (!c.alias) v.emplace_back(c.name);
-    v.emplace_back("peer");
     return v;
 }
 const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "PIPE"};
@@ -173,12 +172,6 @@ int complete_main(int argc, char** argv) {
     int cword = std::atoi(argv[1]);
     std::vector<std::string> words;
     for (int i = 2; i < argc; ++i) words.emplace_back(argv[i]);  // words[0] == "spl"
-
-    // The `peer` keyword is an optional prefix: drop it and shift the cursor.
-    if (words.size() > 1 && words[1] == "peer") {
-        words.erase(words.begin() + 1);
-        if (cword >= 1) --cword;
-    }
 
     if (cword <= 1) {  // completing the command itself
         emit(command_names());
