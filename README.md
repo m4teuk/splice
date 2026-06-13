@@ -176,9 +176,12 @@ CLI flags override the config. Connection records live in the same dir, mode 060
 
 ### Shell completion
 
-`install.sh` drops completion wrappers for bash and fish into the standard
-per-user dirs (and a `_spl` for zsh under `~/.local/share/spl/zsh`, with a
-one-line `fpath` hint). They're thin: all the logic lives in `spl __complete`,
+`install.sh` asks at the end whether to install completion wrappers (defaults to
+yes; set `SPL_COMPLETIONS=0`/`1` to skip the prompt, or
+`SPL_COMPLETIONS_ONLY=1 bash install.sh` to (re)install just the completions). It
+drops them for bash and fish into the standard per-user dirs (and a `_spl` for
+zsh under `~/.local/share/spl/zsh`, with a one-line `fpath` hint). They're thin:
+all the logic lives in `spl __complete`,
 so completion covers commands, peer names, pipe types, your registered pipe
 names, live instance ids, flags, and file paths. To enable manually, source
 `completions/spl.bash`, put `completions/spl.zsh` (as `_spl`) on your `$fpath`,

@@ -243,12 +243,16 @@ install_completions() {
     esac
 }
 
+# Reinstall just the shell completions (no binary): `SPL_COMPLETIONS_ONLY=1 bash install.sh`.
+if [ "${SPL_COMPLETIONS_ONLY:-0}" = "1" ]; then
+    install_completions
+    exit 0
+fi
+
 # --- main: prebuilt first (unless forced to source), then source as fallback ---
 if [ "${SPL_FROM_SOURCE:-0}" = "1" ] || ! try_prebuilt; then
     build_from_source
 fi
-
-install_completions || true
 
 # --- PATH hint ---
 case ":$PATH:" in
@@ -256,5 +260,25 @@ case ":$PATH:" in
     *) warn "$PREFIX is not on your PATH. Add this to your shell profile:"
        printf '         export PATH="%s:$PATH"\n' "$PREFIX" >&2 ;;
 esac
+
+# --- shell completions: ask first (honors $SPL_COMPLETIONS=1/0 to skip the prompt).
+# Reads /dev/tty so the prompt works even under `curl … | bash`; defaults to yes
+# when there is no terminal to ask (e.g. CI).
+want_completions() {
+    case "${SPL_COMPLETIONS:-}" in
+        1|y|Y|yes|YES) return 0 ;;
+        0|n|N|no|NO)   return 1 ;;
+    esac
+    if [ -r /dev/tty ]; then
+        local ans
+        printf '\033[1;32m==>\033[0m Install shell completions (bash/zsh/fish)? [Y/n] ' > /dev/tty
+        read -r ans < /dev/tty || ans=""
+        case "$ans" in n|N|no|NO) return 1 ;; *) return 0 ;; esac
+    fi
+    return 0
+}
+if want_completions; then
+    install_completions || true
+fi
 
 say "Done. Run 'spl pair' to get started (or 'spl --help')"
