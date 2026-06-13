@@ -28,7 +28,7 @@ def wait_status(env, needle, timeout=20):
     deadline = time.time() + timeout
     out = ""
     while time.time() < deadline:
-        out = spl(env, "peer", "status").stdout
+        out = spl(env, "status").stdout
         if needle in out:
             return out
         time.sleep(0.3)
@@ -46,7 +46,7 @@ def main():
 
         # start both daemons
         for env in (lenv, fenv):
-            r = spl(env, "peer", "start", *largs)
+            r = spl(env, "start", *largs)
             assert r.returncode == 0, f"peer start failed:\n{r.stdout}"
         wait_status(lenv, "PEER thefollower")
         wait_status(fenv, "PEER theleader")
@@ -54,7 +54,7 @@ def main():
 
         # echo through the diagnostic pipe (leader -> follower)
         p = subprocess.Popen(
-            [SPL, "peer", "open", "thefollower", "diagnostic"],
+            [SPL, "open", "thefollower", "diagnostic"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         p.stdin.write("hello pipes\n")
@@ -66,31 +66,31 @@ def main():
         print("  diagnostic echo OK")
 
         # the open instance shows up in status counters
-        out = spl(lenv, "peer", "status").stdout
+        out = spl(lenv, "status").stdout
         assert "diagnostic" in out, out
 
         # persistent registration: a second ECHO under a custom name
-        r = spl(fenv, "peer", "register", "theleader", "echo2", "ECHO")
+        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
         assert r.returncode == 0, r.stdout
         # collision is refused
-        r = spl(fenv, "peer", "register", "theleader", "echo2", "ECHO")
+        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
         assert r.returncode != 0, "duplicate register accepted"
         # reserved name is refused
-        r = spl(fenv, "peer", "register", "theleader", "diagnostic", "ECHO")
+        r = spl(fenv, "register", "theleader", "diagnostic", "ECHO")
         assert r.returncode != 0, "reserved name accepted"
 
         out = wait_status(fenv, "echo2")
         print("  persistent registration visible")
 
         # restart the follower daemon; echo2 must survive (it is on disk)
-        assert spl(fenv, "peer", "stop").returncode == 0
-        assert spl(fenv, "peer", "start", *largs).returncode == 0
+        assert spl(fenv, "stop").returncode == 0
+        assert spl(fenv, "start", *largs).returncode == 0
         out = wait_status(fenv, "echo2")
         print("  registration survived daemon restart")
 
         # leader can use it
         p = subprocess.Popen(
-            [SPL, "peer", "open", "thefollower", "echo2"],
+            [SPL, "open", "thefollower", "echo2"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         p.stdin.write("ping2\n")
@@ -102,7 +102,7 @@ def main():
 
         # unknown pipe -> client sees EOF quickly (UNKNOWN closes the conn)
         p = subprocess.Popen(
-            [SPL, "peer", "open", "thefollower", "nosuchpipe"],
+            [SPL, "open", "thefollower", "nosuchpipe"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         assert p.stdout.read() == "", "unknown pipe produced data"
@@ -110,14 +110,14 @@ def main():
         print("  unknown pipe rejected")
 
         # reset clears echo2 but keeps diagnostic
-        assert spl(fenv, "peer", "reset").returncode == 0
+        assert spl(fenv, "reset").returncode == 0
         out = spl(fenv, "peer", "status").stdout
         assert "echo2" not in out, out
         assert "diagnostic" in out, out
         print("  reset OK")
 
         for env in (lenv, fenv):
-            spl(env, "peer", "stop")
+            spl(env, "stop")
         print("daemon integration: all OK")
     finally:
         stop(server)

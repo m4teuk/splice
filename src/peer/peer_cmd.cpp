@@ -19,23 +19,23 @@ namespace spl::peer {
 namespace {
 
 void usage() {
+    // These all work as `spl <sub>`; the `peer` prefix is also accepted.
     spl::logf(
         "usage:\n"
-        "  spl peer list | ls            list paired connections\n"
-        "  spl peer rename <old> <new>   rename a connection\n"
-        "  spl peer remove <name>        delete a connection\n"
-        "  spl peer add [pair options]   pair with a new peer (alias for `spl pair`)\n"
+        "  spl ls | list                 list paired connections\n"
+        "  spl rename <old> <new>        rename a connection\n"
+        "  spl remove <name>             delete a connection\n"
+        "  spl add [pair options]        pair with a new peer (alias for `spl pair`)\n"
         "\n"
-        "  spl peer start [--foreground] [--server H --port N]   run the daemon\n"
-        "  spl peer stop                 stop the daemon\n"
-        "  spl peer reset                drop all pipes (diagnostic stays)\n"
+        "  spl start [--foreground] [--server H --port N]   run the daemon\n"
+        "  spl stop                      stop the daemon\n"
+        "  spl status                    show sessions and pipes\n"
+        "  spl reset                     drop all pipes (diagnostic stays)\n"
         "\n"
-        "  spl peer register <peer> <pipe> <TYPE> [args…]   host a named pipe\n"
-        "  spl peer unregister <peer> <pipe>\n"
-        "  spl peer open [--wait] <peer> <pipe>   connect; stdio becomes the pipe\n"
-        "  spl peer close <peer> <#id>   kill a running instance\n"
-        "\n"
-        "  (status lives at `spl status`)");
+        "  spl register <peer> <pipe> [LIMIT n] <TYPE> [args…]   host a named pipe\n"
+        "  spl unregister <peer> <pipe>\n"
+        "  spl open [--wait] <peer> <pipe>   connect; stdio becomes the pipe\n"
+        "  spl close <peer> <#id>        kill a running instance");
 }
 
 DaemonOpts daemon_opts_from(int argc, char** argv) {

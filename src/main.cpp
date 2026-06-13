@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string_view>
+#include <vector>
 
 #include "native/native.h"
 #include "peer/chat.h"
@@ -41,10 +42,13 @@ void print_usage() {
         "  server                              run the rendezvous + relay server\n"
         "  pair [code]                         pair with another peer\n"
         "  status                              all peers: path, pipes, transfers\n"
-        "  peer <sub>                          daemon, pipes + connections (see spl peer)\n"
         "  serve <peer> [--name n] <path>      host a file for the peer to fetch\n"
         "  get <peer> <pipe> [-o p] [-b]       fetch a served file\n"
         "  chat <name>                         talk to the peer (a PIPE pair)\n"
+        "\n"
+        "  start | stop | reset                daemon lifecycle / drop pipes\n"
+        "  register | unregister | open | close   raw pipe plumbing\n"
+        "  ls | rename | remove | add          manage paired connections\n"
         "\n"
         "  --version   print version\n"
         "  --selftest  verify the native (Rust) FFI link\n"
@@ -83,10 +87,27 @@ int main(int argc, char** argv) {
     if (cmd == "server") return cmd_server(argc - 1, argv + 1);
     if (cmd == "pair") return cmd_pair(argc - 1, argv + 1);
     if (cmd == "status") return spl::peer::status_main();
-    if (cmd == "peer") return cmd_peer(argc - 1, argv + 1);
     if (cmd == "serve") return spl::peer::serve_main(argc - 1, argv + 1);
     if (cmd == "get") return spl::peer::get_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
+
+    // `spl peer <sub>` and the promoted top-level forms `spl <sub>` are the same
+    // commands — the `peer` keyword is an accepted-but-optional prefix.
+    static constexpr const char* kPeerSubs[] = {
+        "start", "stop",       "reset",  "register", "unregister", "open",
+        "close", "ls",         "list",   "rename",   "remove",     "rm",
+        "add",   "status"};
+    bool is_peer_sub = false;
+    for (const char* s : kPeerSubs)
+        if (cmd == s) is_peer_sub = true;
+    if (cmd == "peer" || is_peer_sub) {
+        // Hand peer_cmd_main an argv that always starts with "peer" so its own
+        // dispatch is uniform, whether or not the user typed the keyword.
+        std::vector<char*> a;
+        a.push_back(const_cast<char*>("peer"));
+        for (int i = (cmd == "peer" ? 2 : 1); i < argc; ++i) a.push_back(argv[i]);
+        return cmd_peer(static_cast<int>(a.size()), a.data());
+    }
 
     std::fprintf(stderr, "spl: unknown command '%.*s'\n",
                  static_cast<int>(cmd.size()), cmd.data());

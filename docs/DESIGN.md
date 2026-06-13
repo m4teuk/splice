@@ -134,7 +134,7 @@ Everything above raw TCP lives in the **daemon** and its **pipe** model — name
 durable byte pipes registered per peer, spliced over a single well-known tunnel
 TCP port (7700), with a one-line `OK`/`UNKNOWN` handshake. `spl serve`/`get`
 (file transfer via the `SHARE_FILE`/`GET_FILE` type pair), `spl chat` (a `PIPE`
-pair), and `spl peer …` (status and plumbing) are thin clients of the daemon's
+pair), and `spl status`/`open`/`register`/… (status and plumbing) are thin clients of the daemon's
 unix control socket. The contract — the model, API verbs, wire handshake, type
 catalogue, and rules — is [PIPES.md](PIPES.md).
 

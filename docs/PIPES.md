@@ -1,6 +1,6 @@
 # splice pipes — the daemon abstraction
 
-> This is the contract for the daemon (`spl peer start`) and its pipe model, and
+> This is the contract for the daemon (`spl start`) and its pipe model, and
 > it is what the code implements. [DESIGN.md](DESIGN.md) covers the layers
 > underneath (pairing, the relay, WireGuard, the path manager).
 
@@ -191,9 +191,9 @@ aborts our own fetch.
 
 ## Lifecycle
 
-- `spl peer start` / `spl peer stop` run and kill the daemon explicitly; any
-  client command auto-starts it when the socket is absent and the daemon
-  auto-stops after a quiet period with nothing registered and nothing running.
+- `spl start` / `spl stop` run and kill the daemon explicitly; any client
+  command auto-starts it when the socket is absent. (The `peer` keyword is an
+  accepted-but-optional prefix on all of these: `spl peer start` still works.)
 - CLI commands are thin sugar over the verbs: `spl serve alice --name x f` ≈
   `REGISTER alice x SHARE_FILE f`; `spl get alice x -o f` ≈
   `OPEN alice x GET_FILE f`; `spl chat alice` ≈ `OPEN alice chat PIPE` with the

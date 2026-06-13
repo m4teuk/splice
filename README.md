@@ -137,12 +137,12 @@ spl get phone report.pdf           # fetch (writes ./report.pdf; -o DIR/FILE, -f
 spl chat laptop                    # talk: a terminal on each end of a pipe
 
 spl status                         # all peers: path (direct/relay), pipes, progress
-spl peer start | stop              # daemon lifecycle (auto-started otherwise)
-spl peer ls | rename | remove      # manage paired connections
-spl peer register | open | close   # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
+spl start | stop | reset           # daemon lifecycle (auto-started otherwise)
+spl ls | rename | remove           # manage paired connections
+spl register | open | close        # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
 ```
 
-Serving is durable: registrations survive daemon restarts (`spl peer reset`
+Serving is durable: registrations survive daemon restarts (`spl reset`
 clears them), so you can `spl serve` on a server once and fetch whenever. The
 receiver never silently overwrites (`-f` to allow) and incoming names are
 reduced to a safe filename. `spl get` shows progress on a TTY; everything else
