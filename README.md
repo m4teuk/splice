@@ -132,29 +132,39 @@ paired peer and splices named byte **pipes** over it (see
 it on demand:
 
 ```sh
-spl serve laptop report.pdf        # host a file; the peer fetches it when it wants
+spl serve laptop report.pdf        # host a file or directory; peer fetches when it wants
 spl get phone report.pdf           # fetch (writes ./report.pdf; -o DIR/FILE, -f, -b)
+spl inbox phone ~/Downloads        # opt in to receiving pushes from a peer (--limit N)
+spl send laptop report.pdf dir/    # push files/dirs into the peer's inbox
 spl chat laptop                    # talk: a terminal on each end of a pipe
 
 spl status [-v]                    # all peers: path (direct/relay), pipes, progress
                                    #   -v adds addresses, per-path bytes, candidate table
-spl start | stop | reset           # daemon lifecycle (auto-started otherwise)
+spl ping laptop                    # is the peer reachable right now?
+spl start | stop | reset | config  # daemon lifecycle / drop pipes / show config
 spl ls                             # list paired peers; `spl ls <peer>` = what they serve you
 spl rename | remove                # manage paired connections
 spl register | open | close        # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
 ```
 
-Serving is durable: registrations survive daemon restarts (`spl reset`
-clears them), so you can `spl serve` on a server once and fetch whenever. The
-receiver never silently overwrites (`-f` to allow) and incoming names are
-reduced to a safe filename. `spl get` shows progress on a TTY; everything else
-shows its progress in `spl status`.
+Transfers handle directories (recursive), verify a per-file checksum, and
+**resume** an interrupted `get`/`send` from the kept `.part` (a changed file
+restarts on its own — the checksum won't match). Serving is durable:
+registrations survive daemon restarts (`spl reset` clears them), so you can
+`spl serve` on a server once and fetch whenever. The receiver never silently
+overwrites (`-f` to allow). Foreground `get`/`send` show live progress; `-b`
+detaches and the transfer shows in `spl status`.
+
+The daemon auto-starts on demand and **auto-stops when idle** unless you ran
+`spl start` (which keeps it up until `spl stop`); a registration (`serve`/`inbox`)
+keeps it alive on its own.
 
 ### Config file
 
 The config lives in the config dir (`$SPL_CONFIG_DIR`, else `$XDG_CONFIG_HOME/spl`,
-else `~/.config/spl`). `spl server` setup writes the `[server]` section; add a
-`[peer]` section yourself so the peer commands don't need `--server`/`--port`:
+else `~/.config/spl`); `spl config` prints its path and current values. `spl
+server` setup writes the `[server]` section; add a `[peer]` section yourself so
+the client commands don't need `--server`/`--port`:
 
 ```ini
 [server]                 # written by `spl server` setup

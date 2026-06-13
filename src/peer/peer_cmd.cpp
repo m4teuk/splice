@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/base64.h"
+#include "common/config.h"
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
@@ -30,6 +31,8 @@ void usage() {
         "  spl start [--foreground] [--server H --port N]   run the daemon (stays up)\n"
         "  spl stop                      stop the daemon\n"
         "  spl status [-v]               show sessions and pipes\n"
+        "  spl ping <peer>               is the peer reachable right now?\n"
+        "  spl config                    show config file path + values\n"
         "  spl reset                     drop all registered pipes\n"
         "\n"
         "  spl register <peer> <pipe> [LIMIT n] <TYPE> [args…]   host a named pipe\n"
@@ -214,6 +217,36 @@ int do_list() {
     return 0;
 }
 
+// `spl ping <peer>`: probe whether the peer is reachable right now (and rough RTT).
+int do_ping(int argc, char** argv, const std::string& peer) {
+    std::string err;
+    if (!ensure_daemon(daemon_opts_from(argc, argv), &err)) {
+        spl::logf("spl ping: %s", err.c_str());
+        return 1;
+    }
+    const long rtt = daemon_reach(peer, 5000);
+    if (rtt < 0) {
+        std::printf("%s is unreachable (offline, or not running spl)\n", peer.c_str());
+        return 1;
+    }
+    std::printf("%s is reachable (~%ldms)\n", peer.c_str(), rtt);
+    return 0;
+}
+
+// `spl config`: show where the config lives and the current values (edit by hand).
+int do_config() {
+    Config c = load_config();
+    std::printf("config file: %s%s\n", config_path().c_str(),
+                config_exists() ? "" : "  (does not exist yet)");
+    std::printf("[peer]   addr = %s   port = %u   (relay for pair/serve/get/chat/…)\n",
+                c.peer.addr.empty() ? "(default: splice.kussowski.dev)" : c.peer.addr.c_str(),
+                c.peer.port ? c.peer.port : 443);
+    std::printf("[server] addr = %s   port = %u   (only when running `spl server`)\n",
+                c.server.addr.empty() ? "(unset)" : c.server.addr.c_str(), c.server.port);
+    std::printf("edit the file by hand to change these; CLI flags override per-command.\n");
+    return 0;
+}
+
 int do_rename(const std::string& from, const std::string& to) {
     std::string err;
     auto store = Store::open(&err);
@@ -277,6 +310,15 @@ int peer_cmd_main(int argc, char** argv) {
     if (sub == "stop") return do_stop();
     if (sub == "status") return do_status(has_flag(argc, argv, "-v") || has_flag(argc, argv, "--verbose"));
     if (sub == "reset") return do_verb(argc, argv, "RESET");
+    if (sub == "config") return do_config();
+    if (sub == "ping") {
+        const auto a = plain_args(argc, argv);
+        if (a.size() != 1) {
+            usage();
+            return 2;
+        }
+        return do_ping(argc, argv, a[0]);
+    }
 
     const auto a = plain_args(argc, argv);
     if (sub == "register") {

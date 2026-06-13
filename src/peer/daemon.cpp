@@ -306,8 +306,13 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
         in.lbuf.clear();
 
         if (in.inbound) {
-            // Meta-request: reply with the names we serve this peer, then close.
-            if (line == "__LIST__") {
+            // Meta-requests: reply, then close.
+            if (line == "__PING__") {  // reachability probe
+                in.conn->send(as_span(std::string("PONG\n")));
+                close_instance(s, id, false);
+                return;
+            }
+            if (line == "__LIST__") {  // the names we serve this peer
                 std::string names;
                 for (const auto& [rname, reg] : s.regs) names += rname + "\n";
                 in.conn->send(as_span(names));
@@ -791,10 +796,12 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         return;
     }
 
-    if (cmd == "LIST") {
-        // Ask the peer what it serves us; the reply (names, one per line) is
-        // streamed raw to this control connection, which the ListEnd then closes.
-        if (t.size() != 2) return reply_close("ERR usage: LIST <peer>\n");
+    // LIST / REACH: a meta round-trip to the peer (no OK handshake). The reply
+    // is streamed raw to this control connection (a ListEnd), which then closes
+    // it — empty if the peer is unreachable. LIST asks for the served names;
+    // REACH just pings (the peer replies "PONG").
+    if (cmd == "LIST" || cmd == "REACH") {
+        if (t.size() != 2) return reply_close("ERR usage: " + cmd + " <peer>\n");
         std::string err;
         Session* s = session_for(t[1], &err);
         if (!s) {  // unknown peer -> empty result (close with no body)
@@ -803,8 +810,8 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         }
         auto in = std::make_unique<Instance>();
         in->id = s->next_id++;
-        in->want = "__LIST__";
-        in->type = "list";
+        in->want = cmd == "LIST" ? "__LIST__" : "__PING__";
+        in->type = "meta";
         in->meta = true;
         in->local = std::make_unique<ListEnd>(fd);  // owns the control fd now
         const Millis now = mono_ms();

@@ -36,11 +36,13 @@ const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "PIPE
 
 // Per-command flags. Value-flags consume the following word.
 std::set<std::string> value_flags(const std::string& cmd) {
-    if (cmd == "serve") return {"--name", "--server", "--port"};
+    if (cmd == "serve") return {"--name", "--limit", "--server", "--port"};
     if (cmd == "get") return {"-o", "--out", "--server", "--port"};
+    if (cmd == "send") return {"--server", "--port"};
+    if (cmd == "inbox") return {"--limit", "--server", "--port"};
     if (cmd == "register") return {"LIMIT", "--server", "--port"};
     if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
-        cmd == "start")
+        cmd == "ping" || cmd == "start")
         return {"--server", "--port"};
     if (cmd == "pair" || cmd == "add") return {"--name", "--server", "--port"};
     if (cmd == "server") return {"--bind", "--port", "--cert", "--key"};
@@ -48,6 +50,8 @@ std::set<std::string> value_flags(const std::string& cmd) {
 }
 std::set<std::string> bool_flags(const std::string& cmd) {
     if (cmd == "get") return {"-f", "--force", "-b", "--background"};
+    if (cmd == "send") return {"-b", "--background"};
+    if (cmd == "inbox") return {"-f", "--force"};
     if (cmd == "open") return {"--wait"};
     if (cmd == "status") return {"-v", "--verbose"};
     if (cmd == "start") return {"--foreground"};
@@ -144,7 +148,10 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     };
     if (cmd == "serve") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};
     if (cmd == "get") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
-    if (cmd == "chat" || cmd == "remove" || cmd == "rm") return idx == 0 ? peer() : std::vector<std::string>{};
+    if (cmd == "send") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};  // peer then path(s)
+    if (cmd == "inbox") return idx == 0 ? peer() : (idx == 1 ? std::vector<std::string>{"__DIRS__"} : std::vector<std::string>{});
+    if (cmd == "chat" || cmd == "remove" || cmd == "rm" || cmd == "ping")
+        return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "rename") return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "ls" || cmd == "list") return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});

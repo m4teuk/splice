@@ -109,6 +109,21 @@ std::string daemon_list(const std::string& peer, int timeout_ms) {
     return body;
 }
 
+long daemon_reach(const std::string& peer, int timeout_ms) {
+    int fd = daemon_connect();
+    if (fd < 0) return -1;
+    struct timeval tv {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    const Millis t0 = mono_ms();
+    const std::string cmd = "REACH " + peer + "\n";
+    spl::write_all(fd, cmd.data(), cmd.size());
+    const std::string body = read_to_eof(fd);
+    ::close(fd);
+    if (body.rfind("PONG", 0) != 0) return -1;  // unreachable / no answer
+    const long rtt = static_cast<long>(mono_ms() - t0);
+    return rtt < 0 ? 0 : rtt;
+}
+
 bool ensure_daemon(const DaemonOpts& opts, std::string* err) {
 #ifndef SPL_GIT_SHA
 #define SPL_GIT_SHA "unknown"

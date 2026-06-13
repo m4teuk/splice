@@ -80,6 +80,36 @@ def main():
         assert wait_gone(run3, 10), "daemon did not auto-stop after its registration was removed"
         print("  a registration keeps it alive; removing it lets it stop")
 
+        # --- ping: reachable when the peer serves something, else unreachable ---
+        run4 = tempfile.mkdtemp()
+        run5 = tempfile.mkdtemp()
+        env_l = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=run4)
+        env_f = dict(os.environ, SPL_CONFIG_DIR=fd, SPL_RUNTIME_DIR=run5)
+        # follower not up yet -> unreachable
+        r = subprocess.run([SPL, "ping", "thefollower", *largs], env=env_l,
+                           capture_output=True, text=True, timeout=30)
+        assert r.returncode != 0 and "unreachable" in r.stdout, r.stdout
+        # bring the follower up with a registration so it's reachable
+        assert subprocess.run([SPL, "start", *largs], env=env_f, capture_output=True,
+                              text=True, timeout=30).returncode == 0
+        big = os.path.join(tempfile.mkdtemp(), "f")
+        open(big, "wb").write(b"x")
+        subprocess.run([SPL, "serve", "theleader", "--name", "f", big, *largs], env=env_f,
+                       capture_output=True, timeout=30)
+        deadline = time.time() + 20
+        ok = False
+        while time.time() < deadline:
+            r = subprocess.run([SPL, "ping", "thefollower", *largs], env=env_l,
+                               capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and "reachable" in r.stdout:
+                ok = True
+                break
+            time.sleep(0.5)
+        assert ok, "ping never reported the serving peer reachable: " + r.stdout
+        print("  ping OK (unreachable then reachable)")
+        for env in (env_l, env_f):
+            subprocess.run([SPL, "stop"], env=env, capture_output=True)
+
         print("LIFECYCLE PASSED")
     finally:
         stop(srv)

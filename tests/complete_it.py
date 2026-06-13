@@ -30,10 +30,16 @@ def main():
 
         # commands (no daemon needed)
         cmds = comp(lenv, 1, "spl")
-        for c in ("serve", "get", "chat", "register", "close", "status"):
+        for c in ("serve", "get", "send", "inbox", "chat", "register", "close", "status",
+                  "ping", "config"):
             assert c in cmds, f"missing command {c}: {cmds}"
         assert "peer" not in cmds, "the 'peer' prefix should be gone"
         print("  commands OK")
+
+        # send/inbox/ping complete peer names in slot 0
+        for c in ("send", "inbox", "ping"):
+            assert "thefollower" in comp(lenv, 2, "spl", c), c
+        print("  send/inbox/ping peer completion OK")
 
         # peer names from the store (no daemon)
         peers = comp(lenv, 2, "spl", "get")

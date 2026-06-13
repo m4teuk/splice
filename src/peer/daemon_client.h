@@ -44,6 +44,10 @@ std::string read_to_eof(int fd);
 // starts the daemon. `timeout_ms` bounds the wait so completion stays snappy.
 std::string daemon_list(const std::string& peer, int timeout_ms);
 
+// Probe reachability of `peer` (the REACH verb). Returns a rough round-trip in
+// ms if the peer answers, or -1 if unreachable / no daemon / timeout.
+long daemon_reach(const std::string& peer, int timeout_ms);
+
 // Pump stdin -> fd and fd -> stdout until the daemon side closes (or SIGINT).
 // On stdin EOF: keep receiving (default), or return — closing the pipe — when
 // exit_on_stdin_eof is set (chat semantics). Returns an exit code.
