@@ -80,7 +80,17 @@ class PathManager {
 
     Path tx_path() const { return tx_path_; }
     bool direct_confirmed() const { return direct_confirmed_; }
+    bool active() const { return active_; }
     PathStatus status(Millis now) const;
+
+    // Activity gate: when inactive, tick() initiates no traffic at all (the peer
+    // session goes dormant). The daemon sets this from whether the peer has a
+    // pipe listening/running or was active recently. A false->true edge re-arms
+    // the timers so registration + probing fire on the very next tick.
+    void set_active(bool a) {
+        if (a && !active_) t_register_ = t_whereami_ = t_callme_ = t_ping_ = 0;
+        active_ = a;
+    }
 
     // Pin to the relay and ignore the direct path (used to simulate direct loss).
     void set_force_relay(bool f) { force_relay_ = f; }
@@ -121,6 +131,7 @@ class PathManager {
     std::optional<Endpoint> external_;  // our address as seen by the server
     std::vector<DirectCand> cands_;     // direct-path probe targets (external + any LAN)
     std::optional<Endpoint> chosen_;    // the active direct path (best alive candidate)
+    bool active_ = false;            // gated by the owner; dormant until set_active(true)
     bool direct_confirmed_ = false;  // derived: some candidate is currently alive
     bool force_relay_ = false;
 

@@ -35,9 +35,10 @@ constexpr uint16_t kPipePort = 7700;  // the one tunnel port pipes ride on
 constexpr size_t kChunk = 4096;
 constexpr Millis kDialRetryMs = 500;
 constexpr Millis kDialDeadlineMs = 15000;
-// "diagnostic" is implicit on every peer: always an ECHO, never stored, never
-// unregisterable — so RESET trivially keeps it.
-constexpr const char* kDiagPipe = "diagnostic";
+// How long a peer session stays warm (registered + probing) after its last pipe
+// goes away, so a follow-up command reconnects instantly. After this it goes
+// dormant: no relay traffic, no probing.
+constexpr Millis kWarmMs = 5 * 60 * 1000;
 
 std::atomic<bool> g_dstop{false};
 void on_dsig(int) { g_dstop.store(true); }
@@ -106,6 +107,8 @@ struct Session {
     std::map<std::string, uint64_t> finished;       // per listening-pipe completion counters
     std::map<uint64_t, std::unique_ptr<Instance>> insts;
     uint64_t next_id = 0;
+    size_t persisted_pipes = 0;  // count of on-disk registrations (cached; avoids per-tick fs)
+    Millis last_active = 0;      // last tick this session had a pipe listening/running
     // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
     // end must never be destroyed while one of its own methods is on the stack.
     std::vector<uint64_t> want_close;
@@ -182,6 +185,7 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
     ns->on_output = [pm](ByteSpan ip) { pm->send_inner(ip); };
     poller_.set(pm->fd(), [pm] { pm->handle_io(mono_ms()); });
     s.ns->listen(kPipePort, [this, &s](TcpConn* c) { accept_inbound(s, c); });
+    s.persisted_pipes = store_ ? store_->list_pipes(rec.name).size() : 0;
     if (getenv("SPL_FORCE_RELAY")) pm->set_force_relay(true);  // test hook
     return true;
 }
@@ -274,13 +278,10 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
         in.lbuf.clear();
 
         if (in.inbound) {
-            // Resolve the requested name: implicit diagnostic, then live PIPE
-            // registrations, then the persistent registrations on disk.
+            // Resolve the requested name: live PIPE registrations, then the
+            // persistent registrations on disk.
             in.reg = line;
-            if (line == kDiagPipe) {
-                in.type = "ECHO";
-                in.local = make_local_end("ECHO", {}, nullptr);
-            } else if (auto pit = s.pipe_regs.find(line); pit != s.pipe_regs.end()) {
+            if (auto pit = s.pipe_regs.find(line); pit != s.pipe_regs.end()) {
                 PipeReg& reg = pit->second;
                 if (reg.limit && reg.started >= reg.limit) {  // N-shot quota reached
                     spl::logf("[daemon] %s requested '%s' -> UNKNOWN (limit %u reached)",
@@ -462,6 +463,18 @@ void Daemon::unregister_pipe(Session& s, const std::string& name) {
 
 void Daemon::tick(Millis now) {
     for (auto& [name, s] : sessions_) {
+        // Activity gate: full disco only while something is listening or running,
+        // or within the warm window after the last one. Otherwise the session
+        // goes dormant (no relay traffic, no probing).
+        const bool busy = !s.pipe_regs.empty() || s.persisted_pipes > 0 || !s.insts.empty();
+        if (busy) s.last_active = now;
+        const bool warm = busy || (s.last_active && now - s.last_active < kWarmMs);
+        s.pm->set_active(warm);
+        // Dormant: don't drive the path manager OR lwIP — a frozen lwIP can't even
+        // leak its own IPv6 housekeeping (MLD/DAD) out through the tunnel. handle_io
+        // still runs, and a local REGISTER/OPEN flips us back to warm next tick.
+        if (!warm) continue;
+
         s.pm->tick(now);
         s.ns->check_timeouts();
 
@@ -563,7 +576,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         return reply_close("OK\n");
     }
 
-    if (cmd == "RESET") {  // drop every pipe everywhere; only diagnostic remains
+    if (cmd == "RESET") {  // drop every pipe everywhere
         for (auto& [name, s] : sessions_) {
             std::vector<uint64_t> ids;
             for (auto& [id, in] : s.insts) ids.push_back(id);
@@ -572,6 +585,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             for (auto& [rname, reg] : s.pipe_regs) regs.push_back(rname);
             for (const auto& rname : regs) unregister_pipe(s, rname);
             s.finished.clear();
+            s.persisted_pipes = 0;
         }
         if (store_) store_->wipe_pipes();
         return reply_close("OK\n");
@@ -585,7 +599,6 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
         const std::string& name = t[2];
-        if (name == kDiagPipe) return reply_close("ERR '" + name + "' is reserved\n");
         const bool taken = s->pipe_regs.count(name) ||
                            (store_ && store_->load_pipe(s->name, name).has_value());
         if (taken) return reply_close("ERR pipe '" + name + "' already exists\n");
@@ -632,6 +645,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         if (!store_) return reply_close("ERR no config store\n");
         if (!store_->save_pipe(PipeRecord{s->name, name, type, args}, &terr))
             return reply_close("ERR " + terr + "\n");
+        ++s->persisted_pipes;
         return reply_close("OK\n");
     }
 
@@ -641,13 +655,13 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
         const std::string& name = t[2];
-        if (name == kDiagPipe) return reply_close("ERR '" + name + "' is reserved\n");
         if (s->pipe_regs.count(name)) {
             unregister_pipe(*s, name);
             return reply_close("OK\n");
         }
         if (store_ && store_->remove_pipe(s->name, name)) {
             close_reg_instances(*s, name);
+            if (s->persisted_pipes) --s->persisted_pipes;
             return reply_close("OK\n");
         }
         return reply_close("ERR no pipe '" + name + "'\n");
@@ -761,13 +775,12 @@ std::string Daemon::render_status(Millis now, bool verbose) {
             }
         }
 
-        // --- listening pipes: implicit diagnostic, persistent ones, live PIPEs ---
+        // --- listening pipes: persistent ones, then live PIPEs ---
         struct Listed {
             std::string name, desc;
             uint32_t limit = 0, started = 0;
         };
         std::vector<Listed> listening;
-        listening.push_back({kDiagPipe, "ECHO", 0, 0});
         if (store_) {
             for (const auto& r : store_->list_pipes(name)) {
                 std::string d = r.type;
@@ -778,7 +791,7 @@ std::string Daemon::render_status(Millis now, bool verbose) {
         for (const auto& [rname, reg] : s.pipe_regs)
             listening.push_back({rname, "PIPE", reg.limit, reg.started});
 
-        o << "  LISTENING\n";
+        if (!listening.empty()) o << "  LISTENING\n";
         for (const auto& l : listening) {
             uint64_t active = 0;
             for (const auto& [id, in] : s.insts)

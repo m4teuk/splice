@@ -48,11 +48,11 @@ def status(run_dir):
 
 
 def echo(run_dir, peer, payload, timeout=20):
-    """Round-trip payload through the peer's diagnostic pipe."""
+    """Round-trip payload through an ECHO pipe the peer has registered as 'echo'."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(os.path.join(run_dir, "daemon.sock"))
-    s.sendall(f"OPEN {peer} diagnostic PIPE\n".encode())
+    s.sendall(f"OPEN {peer} echo PIPE\n".encode())
     buf = b""
     while b"\n" not in buf:
         buf += s.recv(4096)
@@ -93,6 +93,10 @@ def main():
             r = subprocess.run([SPL, "peer", "start", *largs], env=env,
                                capture_output=True, text=True, timeout=30)
             assert r.returncode == 0, r.stdout + r.stderr
+
+        # the follower hosts an ECHO so the leader has something to talk to (and
+        # so both sessions are "active" and keep probing under the new gating)
+        assert ctl(frun, "REGISTER theleader echo ECHO") == "OK"
 
         # 1. data flows while everything rides the relay
         echo(lrun, "thefollower", os.urandom(64 * 1024))

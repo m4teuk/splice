@@ -57,7 +57,7 @@ UNREGISTER <peer> <pipe_id>                  -> OK | error
 OPEN       <peer> <peer_pipe_id> [WAIT] <type> <args…> -> <local_id> | error
 CLOSE      <peer> <local_id>                 -> OK | error   (forceful)
 STATUS                                       -> the state of everything
-RESET                                        -> drop every pipe (only `diagnostic` remains)
+RESET                                        -> drop every registered pipe everywhere
 ```
 
 `LIMIT <n>` makes a registration **N-shot**: it serves at most `n` instances over
@@ -127,8 +127,8 @@ kernel, API, and wire format never change.
 | `GET_FILE <path>` | written to `<path>` | nothing |
 | `PIPE` | from the creating process | to the creating process |
 
-Every peer implicitly has `diagnostic` (an `ECHO`): it is not stored, cannot be
-unregistered, and survives `RESET`.
+`ECHO` is handy as a diagnostic target — register one explicitly with
+`spl register <peer> diagnostic ECHO` (the name is not special).
 
 `PIPE` is the escape hatch to the outside world: the unix-socket connection
 that issued the `REGISTER`/`OPEN` itself becomes the byte stream after the
@@ -176,16 +176,13 @@ direct, RTT, liveness — the path manager's snapshot), then the pipes:
 ```
 PEER alice:                          direct 3ms (relay fallback armed)
   LISTENING
-    diagnostic  ECHO                                      (12 finished, 0 active)
     mypdf       SHARE_FILE /home/user/file_to_share.pdf   (0 finished, 1 active)
       #1          sending 48% (2.4/5.1 MB)
     chat        PIPE                                      (1 finished, 0 active)
   RUNNING
     #0          GET_FILE /tmp/notes.md <- alice:notes     receiving 92% (1.1/1.2 MB)
 
-PEER bob:                            unreachable (last seen 2d ago)
-  LISTENING
-    diagnostic  ECHO                                      (0 finished, 0 active)
+PEER bob:                            RELAY   (dormant: nothing listening or running)
 ```
 
 Instance ids (`#0`, `#1`, …) are unique per peer across both sections, so
@@ -197,6 +194,16 @@ aborts our own fetch.
 - `spl start` / `spl stop` run and kill the daemon explicitly; any client
   command auto-starts it when the socket is absent. (The `peer` keyword is an
   accepted-but-optional prefix on all of these: `spl peer start` still works.)
+- **Per-peer activity gating.** A peer session is *active* — registering with the
+  relay, running whereami/CALLME, probing direct paths — only while it has a pipe
+  listening (a live `PIPE` registration or a persisted one) or a running
+  instance, plus a ~5-minute warm window after the last one goes away (so a
+  follow-up command reconnects instantly). Otherwise the session is **dormant**:
+  it sends nothing at all — no relay traffic, no probing, lwIP frozen — so an
+  idle daemon with several paired-but-unused peers is silent. A local
+  `REGISTER`/`OPEN` wakes it on the next tick. There is no implicit `diagnostic`
+  pipe; register one yourself (`spl register <peer> diagnostic ECHO`) if you want
+  an echo target.
 - CLI commands are thin sugar over the verbs: `spl serve alice --name x f` ≈
   `REGISTER alice x SHARE_FILE f`; `spl get alice x -o f` ≈
   `OPEN alice x GET_FILE f`; `spl chat alice` ≈ `OPEN alice chat PIPE` with the

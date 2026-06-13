@@ -23,7 +23,8 @@ constexpr uint8_t DISCO_PONG = 0x03;
 
 constexpr Millis kTickMs = 250;
 constexpr Millis kRegisterMs = 4000;
-constexpr Millis kWhereamiMs = 1000;
+constexpr Millis kWhereamiMs = 1000;         // until our external address is learned
+constexpr Millis kWhereamiRefreshMs = 10000; // refresh after, to catch a NAT/network change
 constexpr Millis kCallmeMs = 1000;
 constexpr Millis kPingProbeMs = 300;       // probe rate while no direct path is up (recover fast)
 constexpr Millis kPingKeepaliveMs = 1000;  // probe rate once a direct path is established
@@ -97,8 +98,10 @@ PathManager::PathManager(net::Fd udp, PathConfig cfg)
     local_eps_ = net::local_interface_endpoints(net::local_port(udp_.get()));
 
     net::set_nonblocking(udp_.get(), true);
-    send_register();
     start_ = mono_ms();
+    // No traffic until the owner marks us active (set_active): a dormant peer
+    // session sits silent. The daemon registers the moment something listens or
+    // a pipe runs.
 }
 
 void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
@@ -295,6 +298,12 @@ void PathManager::handle_io(Millis now) {
 }
 
 void PathManager::tick(Millis now) {
+    // Inactive (the owner has no pipe listening/running and the warm window has
+    // lapsed): stay completely silent — no relay registration, no whereami, no
+    // CALLME, no probing, no WG keepalive. handle_io still runs, so a stray reply
+    // is processed harmlessly. We just stop initiating traffic.
+    if (!active_) return;
+
     if (now - t_tick_ >= kTickMs) {
         t_tick_ = now;
         WgResult r = wg_.tick();
@@ -304,8 +313,10 @@ void PathManager::tick(Millis now) {
         t_register_ = now;
         send_register();
     }
-    // Hole-punching (disco).
-    if (!external_ && now - t_whereami_ >= kWhereamiMs) {
+    // whereami: fast until our external address is known, then a slow refresh so
+    // a NAT rebind / network change is noticed and re-advertised via CALLME.
+    const Millis whereami_iv = external_ ? kWhereamiRefreshMs : kWhereamiMs;
+    if (now - t_whereami_ >= whereami_iv) {
         t_whereami_ = now;
         spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_), sizeof(whereami_token_));
         Bytes q = proto::encode_whereami_req(whereami_token_);

@@ -52,9 +52,16 @@ def main():
         wait_status(fenv, "PEER theleader")
         print("  daemons up, sessions present")
 
-        # echo through the diagnostic pipe (leader -> follower)
+        # nothing is registered, so there are no pipes to reach yet
+        out = spl(lenv, "status").stdout
+        assert "LISTENING" not in out, f"unexpected listening pipes:\n{out}"
+
+        # register an ECHO on the follower; the leader echoes through it
+        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
+        assert r.returncode == 0, r.stdout
+        out = wait_status(fenv, "echo2")
         p = subprocess.Popen(
-            [SPL, "open", "thefollower", "diagnostic"],
+            [SPL, "open", "thefollower", "echo2"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         p.stdin.write("hello pipes\n")
@@ -63,24 +70,12 @@ def main():
         assert line == "hello pipes\n", f"echo mismatch: {line!r}"
         p.stdin.close()
         stop(p)
-        print("  diagnostic echo OK")
+        print("  ECHO pipe round-trip OK")
 
-        # the open instance shows up in status counters
-        out = spl(lenv, "status").stdout
-        assert "diagnostic" in out, out
-
-        # persistent registration: a second ECHO under a custom name
-        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
-        assert r.returncode == 0, r.stdout
         # collision is refused
         r = spl(fenv, "register", "theleader", "echo2", "ECHO")
         assert r.returncode != 0, "duplicate register accepted"
-        # reserved name is refused
-        r = spl(fenv, "register", "theleader", "diagnostic", "ECHO")
-        assert r.returncode != 0, "reserved name accepted"
-
-        out = wait_status(fenv, "echo2")
-        print("  persistent registration visible")
+        print("  duplicate registration refused")
 
         # restart the follower daemon; echo2 must survive (it is on disk)
         assert spl(fenv, "stop").returncode == 0
@@ -109,11 +104,11 @@ def main():
         stop(p)
         print("  unknown pipe rejected")
 
-        # reset clears echo2 but keeps diagnostic
+        # reset clears every pipe
         assert spl(fenv, "reset").returncode == 0
         out = spl(fenv, "peer", "status").stdout
         assert "echo2" not in out, out
-        assert "diagnostic" in out, out
+        assert "LISTENING" not in out, out
         print("  reset OK")
 
         for env in (lenv, fenv):
