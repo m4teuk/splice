@@ -32,7 +32,10 @@ namespace suggest {
 constexpr const char* addr = "::";
 constexpr uint16_t port = 7777;
 constexpr double per_ip_rate = 500, per_ip_burst = 1000;
-constexpr double global_rate = 100000, global_burst = 200000;
+// Global is an anti-abuse ceiling, not a throughput target: 10k pkt/s (~14 MB/s
+// of relayed traffic) is far above any real relay load and keeps a runaway from
+// quietly burning egress. Raise it only if a busy relay actually saturates it.
+constexpr double global_rate = 10000, global_burst = 20000;
 }  // namespace suggest
 
 void usage() {
@@ -271,6 +274,8 @@ int server_main(int argc, char** argv) {
 
     spl::logf("splice server up: pairing tcp/%u, relay udp/%u (bind %s)", tcp_port, udp_port,
               bind.empty() ? "*" : bind.c_str());
+    spl::logf("  rate limits (packets/sec): per-IP %.0f (burst %.0f), global %.0f (burst %.0f)",
+              eff.per_ip_rate, eff.per_ip_burst, eff.global_rate, eff.global_burst);
 
     std::thread relay_thr([relay]() { relay->run(g_stop); });
     pairing->run(g_stop);
