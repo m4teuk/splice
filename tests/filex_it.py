@@ -120,6 +120,15 @@ def main():
         assert r.returncode != 0 and "served" in (r.stdout + r.stderr), (r.stdout + r.stderr)
         print("  not-served error is clear")
 
+        # --- unreachable peer: sending to a peer whose daemon is down says so,
+        # and doesn't get mistaken for a mid-transfer "interrupted" ---
+        spl(fenv, "stop")
+        time.sleep(0.5)
+        r = spl(lenv, "send", "thefollower", gift, *A, timeout=60)
+        blob = r.stdout + r.stderr
+        assert r.returncode != 0 and "reach" in blob and "interrupted" not in blob, blob
+        print("  unreachable peer reported clearly (not 'interrupted')")
+
         for env in (lenv, fenv):
             spl(env, "stop")
         print("FILEX PASSED")

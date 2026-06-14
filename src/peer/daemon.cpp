@@ -484,8 +484,16 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     }
     if (in.follow_fd >= 0) {  // tell the following client the outcome, then close
         const std::string e = in.local ? in.local->error() : "";
-        const std::string fin =
-            !e.empty() ? "E " + e + "\n" : (in.local && in.local->done() ? "D\n" : "E interrupted\n");
+        std::string fin;
+        if (!e.empty())
+            fin = "E " + e + "\n";
+        else if (in.local && in.local->done())
+            fin = "D\n";
+        else if (!in.open)  // never finished the handshake: the peer was unreachable
+            fin = "E couldn't reach " + s.name + " (is their daemon running? check: spl ping " +
+                  s.name + ")\n";
+        else
+            fin = "E interrupted\n";  // connected, then the path dropped mid-transfer
         spl::write_all(in.follow_fd, fin.data(), fin.size());
         ::close(in.follow_fd);
     }
@@ -577,9 +585,12 @@ void Daemon::tick(Millis now) {
                 in.conn->sndbuf() >= kChunk)
                 watch_cfd(s, in);
             if (in.local) in.local->tick(now);
-            // Stream progress to a following client when it changes.
-            if (in.follow_fd >= 0 && in.local) {
-                std::string line = "P " + in.local->describe() + "\n";
+            // Stream progress to a following client when it changes. Until the
+            // handshake lands there are no bytes moving, so show that we're still
+            // connecting rather than a misleading "0%".
+            if (in.follow_fd >= 0) {
+                std::string line = in.open && in.local ? "P " + in.local->describe() + "\n"
+                                                       : "P connecting to " + name + "...\n";
                 if (line != in.follow_last_) {
                     in.follow_last_ = line;
                     spl::write_all(in.follow_fd, line.data(), line.size());
