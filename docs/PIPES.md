@@ -54,7 +54,7 @@ no root anywhere). The verbs:
 ```
 REGISTER   <peer> <pipe_id> [LIMIT <n>] <type> <args…> -> OK | error (e.g. collision)
 UNREGISTER <peer> <pipe_id>                  -> OK | error
-OPEN       <peer> <peer_pipe_id> [WAIT] <type> <args…> -> <local_id> | error
+OPEN       <peer> <peer_pipe_id> [WAIT] [FOLLOW] <type> <args…> -> <local_id> | error
 CLOSE      <peer> <local_id>                 -> OK | error   (forceful)
 STATUS                                       -> the state of everything
 RESET                                        -> drop every registered pipe everywhere
@@ -62,15 +62,20 @@ RESET                                        -> drop every registered pipe every
 
 `LIMIT <n>` makes a registration **N-shot**: it serves at most `n` instances over
 its lifetime (further connections are refused), and once `n` have been spawned
-and all have finished the registration is retired — for a `PIPE`, that closes the
-owner's socket, so the host process exits too. This is how a session ends
-symmetrically: `chat` registers with `LIMIT 1`, so the single conversation
-closing from *either* side tears down both ends. `LIMIT` only applies to `PIPE`
-registrations (a persistent daemon-owned service is never auto-retired). Without
-`LIMIT` a registration serves connections indefinitely until explicitly removed.
+and all have finished the registration is retired. Retiring a `PIPE` closes the
+owner's socket, so the host process exits too — this is how `chat` ends a session
+symmetrically (it registers with `LIMIT 1`, so the single conversation closing
+from *either* side tears down both ends). Retiring a daemon-owned registration
+deletes its stored file. `LIMIT` applies to **any** type: `spl inbox --limit N`
+is just a `GET_FILE` registration with `LIMIT N`, accepting exactly N pushes then
+retiring. Without `LIMIT` a registration serves connections indefinitely until
+explicitly removed.
 
-(Plus three housekeeping verbs: `PING` -> `OK` (aliveness, used by auto-start),
-`STOP` (shut the daemon down), and `FORCE_RELAY <peer> <0|1>` — a debug/test
+(Plus housekeeping verbs: `PING` -> `OK` (aliveness, used by auto-start),
+`VERSION`, `STOP` (shut the daemon down), `STICKY` (mark a running daemon
+no-auto-stop, sent by `spl start`), `LIST <peer>` / `REACH <peer>` (a meta
+round-trip to the peer — the served names, or a reachability ping — backing
+`spl ls <peer>` and `spl ping`), and `FORCE_RELAY <peer> <0|1>`, a debug/test
 hook that pins a session to the relay to simulate losing the direct path. The
 env hooks `SPL_FORCE_RELAY=1` and `SPL_LOSS=<frac>` — drop that fraction of
 egress UDP packets — apply at daemon start.)
@@ -218,7 +223,12 @@ aborts our own fetch.
 ## Lifecycle
 
 - `spl start` / `spl stop` run and kill the daemon explicitly; any client
-  command auto-starts it when the socket is absent.
+  command auto-starts it when the socket is absent. A daemon started implicitly
+  is **non-sticky**: it auto-stops once it has been idle (nothing registered and
+  no instance running) for a couple of minutes, so a casual `spl get` leaves
+  nothing behind. `spl start` marks it **sticky** (runs until `spl stop`), and a
+  live registration (`serve`/`inbox`) keeps even a non-sticky daemon alive on its
+  own. (`SPL_IDLE_STOP_MS` overrides the idle window for tests.)
 - **Per-peer activity gating.** A peer session is *active* — registering with the
   relay, running whereami/CALLME, probing direct paths — only while it has a pipe
   listening (a live `PIPE` registration or a persisted one) or a running
@@ -236,7 +246,8 @@ aborts our own fetch.
 
 ## Later (explicitly out of scope now)
 
-Directory/recursive transfer (a coordinator type pair built from ephemeral
-`SHARE_FILE`/`GET_FILE` registrations), background presence pings to idle
-peers, syncing. All of these are new pipe types or new instances of existing
-verbs — none require touching the kernel.
+Background presence pings to idle peers, syncing, and richer coordinator types.
+All of these are new pipe types or new instances of existing verbs — none require
+touching the kernel. (Directory/recursive transfer, resume, and push were on this
+list and are now done, all inside the `SHARE_FILE`/`GET_FILE` pair — proof the
+model holds.)

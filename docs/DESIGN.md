@@ -2,10 +2,10 @@
 
 `splice` is a peer-to-peer byte/file sharing tool built around an **untrusted
 relay server**. A single binary `spl` runs as the `server`, as a per-user peer
-**daemon**, or as one of its thin clients (`pair` / `serve` / `get` / `chat` /
-`peer`). Two peers pair once, then their daemons talk over a WireGuard tunnel
-whose packets travel either **directly** (NAT hole-punched) or **relayed**
-through the server.
+**daemon**, or as one of its thin clients (`pair` / `serve` / `get` / `send` /
+`inbox` / `chat` / `status` / …). Two peers pair once, then their daemons talk
+over a WireGuard tunnel whose packets travel either **directly** (NAT
+hole-punched) or **relayed** through the server.
 
 ## Threat model
 
@@ -132,11 +132,12 @@ loss recovery.
 
 Everything above raw TCP lives in the **daemon** and its **pipe** model — named,
 durable byte pipes registered per peer, spliced over a single well-known tunnel
-TCP port (7700), with a one-line `OK`/`UNKNOWN` handshake. `spl serve`/`get`
-(file transfer via the `SHARE_FILE`/`GET_FILE` type pair), `spl chat` (a `PIPE`
-pair), and `spl status`/`open`/`register`/… (status and plumbing) are thin clients of the daemon's
-unix control socket. The contract — the model, API verbs, wire handshake, type
-catalogue, and rules — is [PIPES.md](PIPES.md).
+TCP port (7700), with a one-line `OK`/`UNKNOWN` handshake. `spl serve`/`get` and
+`spl send`/`inbox` (pull and push file transfer via the `SHARE_FILE`/`GET_FILE`
+type pair, with directories, checksums, and resume), `spl chat` (a `PIPE` pair),
+and `spl status`/`open`/`register`/… (status and plumbing) are thin clients of
+the daemon's unix control socket. The contract — the model, API verbs, wire
+handshake, type catalogue, and rules — is [PIPES.md](PIPES.md).
 
 ## Crypto & dependency stack
 
@@ -148,6 +149,8 @@ catalogue, and rules — is [PIPES.md](PIPES.md).
 
 ## Out of scope (roadmap)
 
-Directory/recursive transfer (a coordinator pipe-type pair), a TUN backend for
-system-wide use, ULA address GC, macOS/Windows path-manager backends, and
-Let's Encrypt automation for the server (dev runs use an ephemeral self-signed cert).
+A TUN backend for system-wide use, ULA address GC, macOS/Windows path-manager
+backends, and Let's Encrypt automation for the server (dev runs use an ephemeral
+self-signed cert). Directory/recursive transfer, resume, and push (`send`/`inbox`)
+are **done** — they live in the `SHARE_FILE`/`GET_FILE` type pair (see
+[PIPES.md](PIPES.md)), no kernel change required, exactly as this model intended.
