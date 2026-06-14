@@ -48,7 +48,7 @@ def main():
 
         # pipe TYPEs
         types = comp(lenv, 4, "spl", "register", "thefollower", "x")
-        assert types == ["ECHO", "SHARE_FILE", "GET_FILE", "PIPE"], types
+        assert types == ["ECHO", "SHARE_FILE", "GET_FILE", "SHELL", "PIPE"], types
         # SHARE_FILE arg -> files
         assert comp(lenv, 5, "spl", "register", "thefollower", "x", "SHARE_FILE") == ["__FILES__"]
         # ECHO arg -> nothing

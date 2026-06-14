@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
@@ -91,6 +92,7 @@ struct Instance {
     int cfd = -1;                     // …or a bridged client socket (PIPE)
     bool cfd_owned = false;   // OPEN-PIPE owns its fd; inbound-PIPE shares the owner's
     bool cfd_watch = false;   // currently registered with the poller
+    bool lfd_watch = false;   // a LocalEnd's watch_fd() is registered with the poller
     uint64_t up = 0, down = 0;  // bytes local->peer / peer->local
     Millis next_dial = 0, dial_deadline = 0;
     bool dialing = false;
@@ -156,6 +158,7 @@ class Daemon {
     void close_instance(Session& s, uint64_t id, bool finished);
     size_t live_instances(Session& s, const std::string& name);
     void watch_cfd(Session& s, Instance& in);
+    void watch_local_fd(Session& s, Instance& in);  // watch a LocalEnd's watch_fd()
     void unregister(Session& s, const std::string& name);  // remove a reg + its instances
     void tick(Millis now);
 
@@ -277,9 +280,16 @@ void Daemon::bind_end(Session& s, Instance& in) {
         in.local->shutdown = [sp, id] { sp->want_close.push_back(id); };
         conn->on_writable = [this, sp, id] {
             auto it = sp->insts.find(id);
-            if (it != sp->insts.end() && it->second->local) it->second->local->on_tunnel_writable();
+            if (it == sp->insts.end() || !it->second->local) return;
+            Instance& in = *it->second;
+            in.local->on_tunnel_writable();
+            // Tunnel has room again: resume a watch_fd read we paused for backpressure.
+            if (in.local->watch_fd() >= 0 && !in.lfd_watch && in.conn &&
+                in.conn->sndbuf() >= kChunk)
+                watch_local_fd(*sp, in);
         };
         in.local->start();
+        watch_local_fd(s, in);  // SHELL & friends: start() may have opened a watch_fd
     }
 }
 
@@ -467,6 +477,35 @@ void Daemon::watch_cfd(Session& s, Instance& in) {
     });
 }
 
+// Watch a LocalEnd's own descriptor (e.g. a SHELL's PTY master): when readable,
+// read it (gated by tunnel backpressure) and hand the bytes to on_fd_data();
+// EOF/error ends the instance. The end owns the fd; we only watch and unwatch.
+void Daemon::watch_local_fd(Session& s, Instance& in) {
+    const int wfd = in.local ? in.local->watch_fd() : -1;
+    if (wfd < 0 || in.lfd_watch) return;
+    in.lfd_watch = true;
+    Session* sp = &s;
+    const uint64_t id = in.id;
+    poller_.set(wfd, [this, sp, id, wfd] {
+        auto it = sp->insts.find(id);
+        if (it == sp->insts.end()) return;
+        Instance& in = *it->second;
+        if (in.conn && in.conn->sndbuf() < kChunk) {  // backpressure: pause
+            poller_.remove(wfd);
+            in.lfd_watch = false;
+            return;
+        }
+        uint8_t buf[kChunk];
+        ssize_t n = ::read(wfd, buf, sizeof(buf));
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n <= 0) {  // the source closed (e.g. the shell exited)
+            close_instance(*sp, id, true);
+            return;
+        }
+        if (in.local) in.local->on_fd_data(ByteSpan(buf, static_cast<size_t>(n)));
+    });
+}
+
 void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     auto it = s.insts.find(id);
     if (it == s.insts.end()) return;
@@ -474,6 +513,11 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     if (in.cfd >= 0 && in.cfd_owned) {  // a shared (owner) fd is the registration's
         if (in.cfd_watch) poller_.remove(in.cfd);
         ::close(in.cfd);
+    }
+    if (in.lfd_watch && in.local) {  // unwatch before the end's destructor closes it
+        const int wfd = in.local->watch_fd();
+        if (wfd >= 0) poller_.remove(wfd);
+        in.lfd_watch = false;
     }
     if (in.conn) {
         in.conn->on_recv = nullptr;
@@ -586,6 +630,10 @@ void Daemon::tick(Millis now) {
             if (in.open && in.cfd >= 0 && in.cfd_owned && !in.cfd_watch && in.conn &&
                 in.conn->sndbuf() >= kChunk)
                 watch_cfd(s, in);
+            // Likewise resume a LocalEnd's watch_fd (e.g. a SHELL's PTY).
+            if (in.open && in.local && in.local->watch_fd() >= 0 && !in.lfd_watch && in.conn &&
+                in.conn->sndbuf() >= kChunk)
+                watch_local_fd(s, in);
             if (in.local) in.local->tick(now);
             // Stream progress to a following client when it changes. Until the
             // handshake lands there are no bytes moving, so show that we're still

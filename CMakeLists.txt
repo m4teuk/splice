@@ -109,10 +109,15 @@ add_library(spl_peer STATIC
   src/peer/serve_get.cpp
   src/peer/complete.cpp
   src/peer/chat.cpp
+  src/peer/shell.cpp
   src/peer/peer_cmd.cpp
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
 target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip)
+# forkpty: in libutil on Linux/BSD; part of libSystem on macOS.
+if(NOT APPLE)
+  target_link_libraries(spl_peer PUBLIC util)
+endif()
 # The daemon reports its build sha (VERSION verb) and the client checks it, so a
 # stale running daemon is detected instead of producing confusing errors.
 target_compile_definitions(spl_peer PUBLIC SPL_GIT_SHA="${SPL_GIT_SHA}")
@@ -234,6 +239,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME chat_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/chat_it.py $<TARGET_FILE:spl>)
     set_tests_properties(chat_integration PROPERTIES TIMEOUT 90)
+
+    add_test(NAME shell_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/shell_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(shell_integration PROPERTIES TIMEOUT 120)
 
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration

@@ -17,6 +17,9 @@ the relay server.
 - **Push files to someone** who opted in: `spl send laptop ./photos`.
 - **Pipe anything** between two terminals: `spl chat laptop`, or wire up your own
   byte streams.
+- **Get a shell on a machine you own** — `spl revshell laptop` offers one,
+  `spl shell laptop` attaches; it feels like ssh (raw terminal, live resize), with
+  no server and no open port.
 - **Resume interrupted transfers** automatically, with per-file checksums, over
   directories of any depth.
 - All of it **end-to-end encrypted** (WireGuard), **without root** (no TUN
@@ -91,6 +94,9 @@ spl get   <peer> <pipe> [-o p] [-f] [-b]   fetch a served file/dir (-o DIR/FILE,
 spl inbox <peer> <dir> [--name n] [--limit N]   let a peer push files to you (--name for several inboxes; --limit N pushes then close)
 spl send  <peer> <path>… [--name n] [-b]        push files/dirs into the peer's inbox (--name picks which one)
 spl chat  <peer>                      talk: a terminal on each end of a pipe
+
+spl revshell <peer> [--name n] [--limit N]   offer a shell on this machine to a peer
+spl shell    <peer> [--name n]               open a shell on the peer (feels like ssh)
 
 spl status [-v]                       all peers: path, pipes, progress (-v: addresses, bytes, candidates)
 spl ping  <peer>                      reachability + rough RTT

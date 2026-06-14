@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "common/log.h"
+#include "peer/shell.h"
 
 namespace spl::peer {
 
@@ -426,6 +427,7 @@ std::unique_ptr<LocalEnd> make_local_end(const std::string& type,
         }
         return std::make_unique<GetFileEnd>(args[0], args.size() == 2);
     }
+    if (type == "SHELL") return make_shell_end(args, err);
     if (err) *err = "unknown pipe type '" + type + "'";
     return nullptr;
 }

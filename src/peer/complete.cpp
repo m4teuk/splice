@@ -32,7 +32,7 @@ std::vector<std::string> command_names() {
         if (!c.alias) v.emplace_back(c.name);
     return v;
 }
-const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "PIPE"};
+const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "SHELL", "PIPE"};
 
 // Per-command flags. Value-flags consume the following word.
 std::set<std::string> value_flags(const std::string& cmd) {
@@ -40,6 +40,8 @@ std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "get") return {"-o", "--out", "--server", "--port"};
     if (cmd == "send") return {"--name", "--server", "--port"};
     if (cmd == "inbox") return {"--name", "--limit", "--server", "--port"};
+    if (cmd == "revshell") return {"--name", "--limit", "--server", "--port"};
+    if (cmd == "shell") return {"--name", "--server", "--port"};
     if (cmd == "register") return {"LIMIT", "--server", "--port"};
     if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
         cmd == "ping" || cmd == "start")
@@ -172,7 +174,8 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     if (cmd == "get") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "send") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};  // peer then path(s)
     if (cmd == "inbox") return idx == 0 ? peer() : (idx == 1 ? std::vector<std::string>{"__DIRS__"} : std::vector<std::string>{});
-    if (cmd == "chat" || cmd == "remove" || cmd == "rm" || cmd == "ping")
+    if (cmd == "chat" || cmd == "remove" || cmd == "rm" || cmd == "ping" || cmd == "revshell" ||
+        cmd == "shell")
         return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "rename") return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "ls" || cmd == "list") return idx == 0 ? peer() : std::vector<std::string>{};
@@ -218,8 +221,8 @@ int complete_main(int argc, char** argv) {
     if (value_flags(cmd).count(prev)) {
         if (prev == "-o" || prev == "--out") {
             emit({"__FILES__"});
-        } else if (cmd == "send" && prev == "--name") {
-            // `send --name <TAB>`: the inboxes the peer serves us (LIST round-trip).
+        } else if ((cmd == "send" || cmd == "shell") && prev == "--name") {
+            // `send/shell --name <TAB>`: the pipes the peer serves us (LIST round-trip).
             auto pos = positionals_before(cmd, words, cword);
             emit(remote_pipes(pos.empty() ? "" : pos[0]));
         }

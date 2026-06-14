@@ -136,6 +136,7 @@ kernel, API, and wire format never change.
 | `ECHO` | anything | a copy of the input (diagnostics) |
 | `SHARE_FILE <path>` | RESUME offsets | the file (or directory) content |
 | `GET_FILE <target> [OVERWRITE]` | the stream → written under `<target>` | RESUME offsets |
+| `SHELL` | framed keystrokes + window-size | a PTY running the host's `$SHELL` |
 | `PIPE` | from the creating process | to the creating process |
 
 `ECHO` is handy as a diagnostic target — register one explicitly with
@@ -170,6 +171,19 @@ interrupted transfer **resumes**, a same-named-but-changed file **restarts**
 magic also lets the receiver tell a real `SHARE_FILE` apart from any other pipe
 (getting, say, a `chat` reports "not a SHARE_FILE pipe" rather than a vague
 failure). None of this leaks downward — the daemon still splices opaque bytes.
+
+`SHELL` is another matched pair, and the first that needs a **watched fd**: each
+inbound connection `forkpty`s the host's `$SHELL`, and the daemon splices that PTY
+master ↔ the tunnel (a regular file is always "ready" and so is pump-driven; a PTY
+is not, so a `LocalEnd` may expose a `watch_fd()` the daemon polls on its behalf —
+the same hook a future filesystem export will use). It is daemon-owned and durable
+like `SHARE_FILE`: `spl revshell <peer>` registers it once and it serves a fresh
+shell per attach until unregistered (`--limit 1` for a one-shot). The client→host
+direction is framed (`[type:1][len:2][payload]`: data, or a 4-byte window-size
+that becomes a `TIOCSWINSZ`), so resizing the client terminal reflows the remote;
+host→client is the raw shell stream. `spl shell <peer>` attaches with the local
+terminal in raw mode — it feels like `ssh`. Because the host PTY runs as the host
+user, this is a deliberate, named, revocable grant of code execution to one peer.
 
 `spl serve`/`get` are the pull form; `spl inbox`/`send` are the push form (the
 receiver opts in with a `GET_FILE` registration, then the sender opens it with

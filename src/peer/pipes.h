@@ -32,6 +32,16 @@ class LocalEnd {
     virtual std::string describe() const = 0;  // one status line fragment
     virtual bool done() const { return false; }       // finished its job successfully
     virtual std::string error() const { return ""; }  // non-empty if it failed
+
+    // A descriptor the daemon watches for readability on this end's behalf (e.g.
+    // a PTY master, whose output arrives asynchronously — unlike a regular file,
+    // which is always "ready" and so is pump-driven instead). -1 (the default)
+    // means the end owns no such descriptor and is purely tunnel/tick-driven.
+    // When the fd is readable the daemon reads it (gated by tunnel backpressure)
+    // and hands the bytes to on_fd_data(); EOF/error closes the instance. The
+    // end owns the fd and closes it in its destructor.
+    virtual int watch_fd() const { return -1; }
+    virtual void on_fd_data(ByteSpan) {}
 };
 
 // ECHO: sends back everything it receives. Diagnostics.

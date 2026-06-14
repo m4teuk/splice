@@ -19,6 +19,7 @@
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
 #include "peer/serve_get.h"
+#include "peer/shell.h"
 #include "server/server_main.h"
 
 namespace {
@@ -67,6 +68,8 @@ void print_usage() {
         "  inbox <peer> <dir> [--limit N]      let the peer push files to you\n"
         "  send <peer> <path...>               push files into the peer's inbox\n"
         "  chat <name>                         talk to the peer (a PIPE pair)\n"
+        "  revshell <peer> [--name n]          offer a shell on this machine to the peer\n"
+        "  shell <peer> [--name n]             open a shell on the peer\n"
         "\n"
         "  status [-v] | ping <peer>           connection state / reachability\n"
         "  start | stop | reset | config       daemon lifecycle / drop pipes / config\n"
@@ -115,6 +118,8 @@ int main(int argc, char** argv) {
     if (cmd == "send") return spl::peer::send_main(argc - 1, argv + 1);
     if (cmd == "inbox") return spl::peer::inbox_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
+    if (cmd == "revshell") return spl::peer::revshell_main(argc - 1, argv + 1);
+    if (cmd == "shell") return spl::peer::shell_main(argc - 1, argv + 1);
     if (cmd == "update") return cmd_update();
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
