@@ -5,6 +5,8 @@ round-trip command, durability (attach twice), named + --limit one-shot, and
 unregister. The client is driven over pipes (no tty), exercising the same code
 path minus raw-mode/winsize."""
 import os
+import select
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -65,6 +67,46 @@ def main():
         out = attach(lenv, "echo GONE\nexit\n")
         assert "GONE" not in out, "unregistered shell still served: " + out
         print("  unregister stops offering")
+
+        # interactivity: small request/response round-trips must be snappy, not
+        # stalled on the Nagle x delayed-ACK interaction (that bug was ~150ms each;
+        # with Nagle disabled it's well under a millisecond — guard with a wide
+        # margin so CI noise can't trip it but a regression will).
+        assert run(fenv, "revshell", "theleader").returncode == 0
+        p = subprocess.Popen([SPL, "shell", "thefollower"] + A, env=lenv, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+
+        def waitfor(tok, budget=5.0):
+            buf, end = b"", time.time() + budget
+            while time.time() < end:
+                r, _, _ = select.select([p.stdout], [], [], end - time.time())
+                if r:
+                    b = os.read(p.stdout.fileno(), 65536)
+                    if not b:
+                        return False
+                    buf += b
+                    if tok in buf:
+                        return True
+            return False
+
+        waitfor(b"$", 2.0)  # first prompt
+        rtts = []
+        for i in range(15):
+            tok = f"PONG{i}".encode()
+            t0 = time.time()
+            p.stdin.write(b"echo " + tok + b"\n")
+            p.stdin.flush()
+            assert waitfor(tok), f"no response to round-trip {i}"
+            rtts.append((time.time() - t0) * 1000)
+        p.stdin.write(b"exit\n")
+        p.stdin.flush()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        med = statistics.median(rtts)
+        assert med < 40, f"interactive round-trip too slow: median {med:.1f}ms (Nagle regression?)"
+        print(f"  interactive round-trips snappy (median {med:.1f}ms)")
 
         for env in (lenv, fenv):
             run(env, "stop")

@@ -75,6 +75,10 @@ TcpConn::~TcpConn() {
 void TcpConn::attach() {
     if (!pcb_) return;
     connected_ = true;  // established (connect succeeded or we accepted it)
+    // Disable Nagle on every pipe. Interactive types (shell, chat) need it off to
+    // avoid the Nagle×delayed-ACK stall; bulk types are unaffected because flush()
+    // already coalesces into MSS-sized writes, so Nagle never delays a full segment.
+    tcp_nagle_disable(pcb_);
     tcp_recv(pcb_, tramp_recv);
     tcp_sent(pcb_, tramp_sent);
 }
@@ -127,9 +131,14 @@ int TcpConn::on_lwip_recv(pbuf* p, int err) {
     }
     Bytes data(p->tot_len);
     pbuf_copy_partial(p, data.data(), p->tot_len, 0);
-    tcp_recved(pcb_, p->tot_len);  // ack before the app callback (which may close)
+    tcp_recved(pcb_, p->tot_len);  // open the receive window before the app callback
     pbuf_free(p);
     if (on_recv) on_recv(as_span(data));
+    // Flush the ACK now rather than waiting for the ~250ms delayed-ACK timer. If the
+    // app replied in on_recv (e.g. a shell echo) the ACK already rode out on that
+    // segment and this is a no-op; otherwise it sends the standalone ACK promptly so
+    // the peer's next segment isn't stalled. Keeps interactive round-trips snappy.
+    if (pcb_) tcp_output(pcb_);
     return ERR_OK;
 }
 
