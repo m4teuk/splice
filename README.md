@@ -144,6 +144,7 @@ spl ping laptop                    # is the peer reachable right now?
 spl start | stop | reset | config  # daemon lifecycle / drop pipes / show config
 spl ls                             # list paired peers; `spl ls <peer>` = what they serve you
 spl rename | remove                # manage paired connections
+spl update                         # re-run the installer to upgrade to the latest spl
 spl register | open | close        # raw pipe plumbing (ECHO, SHARE_FILE, PIPE, …)
 ```
 

@@ -18,7 +18,8 @@ struct CommandDef {
 inline constexpr CommandDef kCommands[] = {
     {"server", false, false}, {"pair", false, false},     {"serve", false, false},
     {"get", false, false},    {"send", false, false},     {"inbox", false, false},
-    {"chat", false, false},   {"status", true, false},    {"ping", true, false},
+    {"chat", false, false},   {"update", false, false},   {"status", true, false},
+    {"ping", true, false},
     {"config", true, false},  {"start", true, false},     {"stop", true, false},
     {"reset", true, false},   {"register", true, false},
     {"unregister", true, false}, {"open", true, false},   {"close", true, false},

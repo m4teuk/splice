@@ -4,8 +4,12 @@
 // argument handling and proves the Rust(native) <-> C++ FFI link; the role
 // implementations are filled in by later phases.
 
+#include <unistd.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <string_view>
 
 #include "native/native.h"
@@ -35,6 +39,21 @@ int cmd_pair(int argc, char** argv) {
 int cmd_chat(int argc, char** argv) { return spl::peer::chat_main(argc, argv); }
 int cmd_peer(int argc, char** argv) { return spl::peer::peer_cmd_main(argc, argv); }
 
+// Re-run the installer one-liner — the same `curl … | bash` the README documents,
+// which downloads the latest prebuilt binary (or builds from source) and replaces
+// this one in place. SPL_INSTALL_URL overrides the source (forks / testing). We
+// exec the shell so spl hands its terminal straight to the installer.
+int cmd_update() {
+    const char* url = std::getenv("SPL_INSTALL_URL");
+    if (!url || !*url)
+        url = "https://raw.githubusercontent.com/m4teuk/splice/main/install.sh";
+    const std::string sh = "curl -fsSL '" + std::string(url) + "' | bash";
+    std::fprintf(stderr, "updating spl from %s\n", url);
+    ::execl("/bin/sh", "sh", "-c", sh.c_str(), static_cast<char*>(nullptr));
+    std::perror("spl update: could not exec /bin/sh");
+    return 1;
+}
+
 void print_usage() {
     std::puts(
         "usage: spl <command> [args]\n"
@@ -53,6 +72,7 @@ void print_usage() {
         "  start | stop | reset | config       daemon lifecycle / drop pipes / config\n"
         "  register | unregister | open | close   raw pipe plumbing\n"
         "  ls [peer] | rename | remove | add   connections (ls <peer> = what they serve)\n"
+        "  update                              re-run the installer to get the latest spl\n"
         "\n"
         "  --version   print version\n"
         "  --selftest  verify the native (Rust) FFI link\n"
@@ -95,6 +115,7 @@ int main(int argc, char** argv) {
     if (cmd == "send") return spl::peer::send_main(argc - 1, argv + 1);
     if (cmd == "inbox") return spl::peer::inbox_main(argc - 1, argv + 1);
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
+    if (cmd == "update") return cmd_update();
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
     // The daemon / pipe / connection management commands (start, stop, status,
