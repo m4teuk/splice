@@ -179,14 +179,16 @@ int get_main(int argc, char** argv) {
 int send_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() < 2) {
-        spl::logf("usage: spl send <peer> <path>…   (each path may be a directory)");
+        spl::logf("usage: spl send <peer> <path>…   (each path may be a directory; "
+                  "--name <inbox> targets a named inbox)");
         return 2;
     }
     const std::string& peer = o.pos[0];
+    const std::string inbox = o.name.empty() ? kInbox : o.name;  // which inbox to push into
     int rc = 0;
     for (size_t i = 1; i < o.pos.size(); ++i) {  // one SHARE_FILE connection per path
         const std::string path = abspath(o.pos[i]);
-        if (open_and_follow(o, peer, kInbox, "SHARE_FILE " + ctl_encode(path), "spl send",
+        if (open_and_follow(o, peer, inbox, "SHARE_FILE " + ctl_encode(path), "spl send",
                             "sending") != 0)
             rc = 1;
     }
@@ -196,11 +198,12 @@ int send_main(int argc, char** argv) {
 int inbox_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl inbox <peer> <dir> [--limit N] [-f]");
+        spl::logf("usage: spl inbox <peer> <dir> [--name <inbox>] [--limit N] [-f]");
         return 2;
     }
     const std::string& peer = o.pos[0];
     const std::string dir = abspath(o.pos[1]);
+    const std::string name = o.name.empty() ? kInbox : o.name;  // one peer may have several
     ::mkdir(dir.c_str(), 0755);  // GET_FILE needs the directory to exist (dir-mode)
 
     std::string err;
@@ -208,7 +211,7 @@ int inbox_main(int argc, char** argv) {
         spl::logf("spl inbox: %s", err.c_str());
         return 1;
     }
-    std::string line = "REGISTER " + ctl_encode(peer) + " " + kInbox + " ";
+    std::string line = "REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) + " ";
     if (o.limit) line += "LIMIT " + std::to_string(o.limit) + " ";
     line += "GET_FILE " + ctl_encode(dir);
     if (o.overwrite) line += " OVERWRITE";
@@ -217,7 +220,13 @@ int inbox_main(int argc, char** argv) {
         daemon_fail("spl inbox", r);
         return 1;
     }
-    std::printf("inbox open: %s can `spl send <you> <path>` into %s\n", peer.c_str(), dir.c_str());
+    // The default inbox needs no --name on the sender's side; a named one does.
+    if (name == kInbox)
+        std::printf("inbox open: %s can `spl send <you> <path>` into %s\n", peer.c_str(),
+                    dir.c_str());
+    else
+        std::printf("inbox '%s' open: %s can `spl send <you> <path> --name %s` into %s\n",
+                    name.c_str(), peer.c_str(), name.c_str(), dir.c_str());
     return 0;
 }
 

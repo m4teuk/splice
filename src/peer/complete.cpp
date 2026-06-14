@@ -38,8 +38,8 @@ const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "PIPE
 std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "serve") return {"--name", "--limit", "--server", "--port"};
     if (cmd == "get") return {"-o", "--out", "--server", "--port"};
-    if (cmd == "send") return {"--server", "--port"};
-    if (cmd == "inbox") return {"--limit", "--server", "--port"};
+    if (cmd == "send") return {"--name", "--server", "--port"};
+    if (cmd == "inbox") return {"--name", "--limit", "--server", "--port"};
     if (cmd == "register") return {"LIMIT", "--server", "--port"};
     if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
         cmd == "ping" || cmd == "start")

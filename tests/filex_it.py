@@ -93,10 +93,26 @@ def main():
         assert wait_tree(os.path.join(inbox, "photos"), tree_shas(src)), "pushed dir mismatch"
         print("  send directory -> inbox OK")
 
-        # --- inbox is one fixed pipe per peer; re-registering collides ---
+        # --- named inboxes: several at once, the sender picks one with --name ---
+        media = tempfile.mkdtemp()
+        assert spl(lenv, "inbox", "thefollower", media, "--name", "media", *A).returncode == 0
+        clip = os.path.join(work, "clip.bin")
+        open(clip, "wb").write(os.urandom(40000))
+        # --name media routes here; the default inbox must stay untouched
+        r = spl(fenv, "send", "theleader", clip, "--name", "media", *A)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert wait_file(os.path.join(media, "clip.bin"), sha(clip)), "named inbox mismatch"
+        assert not os.path.exists(os.path.join(inbox, "clip.bin")), "leaked into default inbox"
+        # sending to a non-existent inbox name is reported, not silently dropped
+        r = spl(fenv, "send", "theleader", clip, "--name", "nope", *A, timeout=60)
+        assert r.returncode != 0 and "served" in (r.stdout + r.stderr), (r.stdout + r.stderr)
+        print("  named inboxes OK (routing + unknown-name error)")
+
+        # --- a name is one pipe per peer; re-registering the same name collides ---
         r = spl(lenv, "inbox", "thefollower", tempfile.mkdtemp(), *A)
         assert r.returncode != 0, "duplicate inbox should collide"
-        print("  inbox collision refused")
+        # but a different --name is fine (already proven above by 'media')
+        print("  inbox name collision refused")
 
         # --- resume: interrupt a large get, keep the .part, finish it ---
         big = os.path.join(work, "big.bin")

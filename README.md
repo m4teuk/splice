@@ -88,8 +88,8 @@ That's the whole day-to-day. Transfers show live progress; add `-b` to a
 ```
 spl serve <peer> [--name n] <path>    host a file/dir for the peer to fetch (--limit N)
 spl get   <peer> <pipe> [-o p] [-f] [-b]   fetch a served file/dir (-o DIR/FILE, -f force, -b background)
-spl inbox <peer> <dir> [--limit N]    let a peer push files to you (--limit N pushes then close)
-spl send  <peer> <path>…  [-b]        push files/dirs into the peer's inbox
+spl inbox <peer> <dir> [--name n] [--limit N]   let a peer push files to you (--name for several inboxes; --limit N pushes then close)
+spl send  <peer> <path>… [--name n] [-b]        push files/dirs into the peer's inbox (--name picks which one)
 spl chat  <peer>                      talk: a terminal on each end of a pipe
 
 spl status [-v]                       all peers: path, pipes, progress (-v: addresses, bytes, candidates)

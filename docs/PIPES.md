@@ -172,10 +172,14 @@ magic also lets the receiver tell a real `SHARE_FILE` apart from any other pipe
 failure). None of this leaks downward — the daemon still splices opaque bytes.
 
 `spl serve`/`get` are the pull form; `spl inbox`/`send` are the push form (the
-receiver opts in with an `inbox` `GET_FILE` registration, then the sender opens
-it with `SHARE_FILE`). `inbox --limit N` uses the N-shot LIMIT to accept exactly
-N pushes. Foreground `get`/`send` stream live progress over the control
-connection (an `OPEN … FOLLOW`); `-b` detaches and the transfer shows in
+receiver opts in with a `GET_FILE` registration, then the sender opens it with
+`SHARE_FILE`). Like any registration the inbox has a **name** — `inbox` by
+default, or anything via `inbox --name <n>`, so one peer can offer several inboxes
+(say `downloads` and `media` into different directories); the sender picks one
+with `send --name <n>` (no `--name` means the default `inbox`, and an unknown name
+gets the usual "not served" error). `inbox --limit N` uses the N-shot LIMIT to
+accept exactly N pushes. Foreground `get`/`send` stream live progress over the
+control connection (an `OPEN … FOLLOW`); `-b` detaches and the transfer shows in
 `spl status`.
 
 ## Rules
