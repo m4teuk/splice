@@ -488,7 +488,9 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         if (!e.empty())
             fin = "E " + e + "\n";
         else if (in.local && in.local->done())
-            fin = "D\n";
+            // Flush the final state (e.g. "sent 1 file(s)") first, so the client
+            // isn't left showing a stale 98% from the last tick, then signal done.
+            fin = "P " + in.local->describe() + "\nD\n";
         else if (!in.open)  // never finished the handshake: the peer was unreachable
             fin = "E couldn't reach " + s.name + " (is their daemon running? check: spl ping " +
                   s.name + ")\n";

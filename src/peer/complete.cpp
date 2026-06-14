@@ -66,6 +66,28 @@ std::vector<std::string> all_flags(const std::string& cmd) {
     return f;
 }
 
+// The positional words (peer, paths, …) typed before index `upto`, skipping
+// flags and the values they consume.
+std::vector<std::string> positionals_before(const std::string& cmd,
+                                            const std::vector<std::string>& words, int upto) {
+    std::vector<std::string> pos;
+    bool prev_value_flag = false;
+    for (int i = 2; i < upto && i < static_cast<int>(words.size()); ++i) {
+        const std::string& w = words[i];
+        if (prev_value_flag) {
+            prev_value_flag = false;
+            continue;
+        }
+        if (value_flags(cmd).count(w)) {
+            prev_value_flag = true;
+            continue;
+        }
+        if (bool_flags(cmd).count(w)) continue;
+        pos.push_back(w);
+    }
+    return pos;
+}
+
 std::vector<std::string> peer_names() {
     auto store = Store::open(nullptr);
     return store ? store->list() : std::vector<std::string>{};
@@ -194,8 +216,14 @@ int complete_main(int argc, char** argv) {
 
     // If the previous word is a value-flag, complete its value.
     if (value_flags(cmd).count(prev)) {
-        if (prev == "-o" || prev == "--out") emit({"__FILES__"});
-        return 0;  // --server/--port/--name/LIMIT/etc: free text, no candidates
+        if (prev == "-o" || prev == "--out") {
+            emit({"__FILES__"});
+        } else if (cmd == "send" && prev == "--name") {
+            // `send --name <TAB>`: the inboxes the peer serves us (LIST round-trip).
+            auto pos = positionals_before(cmd, words, cword);
+            emit(remote_pipes(pos.empty() ? "" : pos[0]));
+        }
+        return 0;  // --server/--port/--limit/inbox's own --name/etc: free text
     }
     // Completing a flag.
     if (!partial.empty() && partial[0] == '-') {
@@ -203,21 +231,7 @@ int complete_main(int argc, char** argv) {
         return 0;
     }
     // Otherwise a positional: count the positional words before the cursor.
-    std::vector<std::string> pos;
-    bool prev_value_flag = false;
-    for (int i = 2; i < cword; ++i) {
-        const std::string& w = words[i];
-        if (prev_value_flag) {
-            prev_value_flag = false;
-            continue;
-        }
-        if (value_flags(cmd).count(w)) {
-            prev_value_flag = true;
-            continue;
-        }
-        if (bool_flags(cmd).count(w)) continue;
-        pos.push_back(w);
-    }
+    auto pos = positionals_before(cmd, words, cword);
     emit(positional(cmd, pos.size(), pos));
     return 0;
 }

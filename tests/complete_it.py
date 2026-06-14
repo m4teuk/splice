@@ -85,6 +85,11 @@ def main():
         assert "echo" in rp, f"remote pipe completion: {rp}"
         print("  remote-pipe completion OK (LIST)")
 
+        # `send <peer> --name <TAB>` completes the peer's served inbox names too
+        sp = comp(lenv, 4, "spl", "send", "thefollower", "--name")
+        assert "echo" in sp, f"send --name completion: {sp}"
+        print("  send --name completion OK (LIST)")
+
         # `spl ls <peer>` shows the peer's offered pipes
         r = subprocess.run([SPL, "ls", "thefollower", *A], env=lenv,
                            capture_output=True, text=True, timeout=15)
