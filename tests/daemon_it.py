@@ -54,7 +54,7 @@ def main():
 
         # nothing is registered, so there are no pipes to reach yet
         out = spl(lenv, "status").stdout
-        assert "LISTENING" not in out, f"unexpected listening pipes:\n{out}"
+        assert "OFFERED" not in out, f"unexpected listening pipes:\n{out}"
 
         # register an ECHO on the follower; the leader echoes through it
         r = spl(fenv, "register", "theleader", "echo2", "ECHO")
@@ -123,7 +123,7 @@ def main():
         assert spl(fenv, "reset").returncode == 0
         out = spl(fenv, "status").stdout
         assert "echo2" not in out, out
-        assert "LISTENING" not in out, out
+        assert "OFFERED" not in out, out
         print("  reset OK")
 
         for env in (lenv, fenv):

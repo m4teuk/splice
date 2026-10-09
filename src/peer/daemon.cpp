@@ -83,9 +83,15 @@ struct ListEnd : LocalEnd {
 struct Instance {
     uint64_t id = 0;
     bool inbound = false;     // spawned by our listening pipe (vs created by OPEN)
-    std::string reg;          // inbound: name of the listening pipe that spawned us
+    // Inbound: the name the peer asked for, and the serial of the registration
+    // that served it (0 until the handshake resolves). Only the counters use the
+    // serial; the instance is otherwise independent of its registration — it can
+    // outlive it, and a new registration under the same name is a different one.
+    std::string reg;
+    uint64_t reg_serial = 0;
     std::string want;         // outbound: remote pipe id to request
-    std::string type;         // local end type name (for status)
+    std::string type;         // local end type, snapshotted at connect (for status)
+    std::vector<std::string> args;  // …and its arguments
     TcpConn* conn = nullptr;  // tunnel side (owned by the session's Netstack)
     bool open = false;        // handshake finished, splicing
     std::string lbuf;         // handshake line buffer
@@ -108,17 +114,25 @@ struct Instance {
 // daemon runs each instance) and PIPE (a live client process's socket in
 // `owner_fd`, gone when that process exits).
 //
+// A registration is only an offer: the daemon consults it when the peer
+// connects (and for LIST). Instances it spawns are independent of it from then
+// on — unregistering (or retiring) stops new connections but leaves live ones
+// running. The one shared resource is a PIPE's owner socket, which is the byte
+// stream itself: it stays open until neither a registration nor a live instance
+// uses it (see release_owner_fd).
+//
 // LIMIT N caps the registration at N instances over its lifetime ("N-shot"):
-// further connections are refused, and once N have been spawned and all have
-// finished the registration is retired (deleted from disk and, for a PIPE, its
-// owner socket closed). chat uses LIMIT 1 — exactly one conversation, ended
-// symmetrically from either side. limit 0 = unlimited.
+// once N have started it is retired at once (deleted from disk; live instances
+// carry on). chat uses LIMIT 1 — exactly one conversation; when it ends from
+// either side, the owner socket closes and both processes exit. 0 = unlimited.
 struct Reg {
-    std::string type;             // ECHO / SHARE_FILE / GET_FILE / PIPE
+    uint64_t serial = 0;          // unique per session: tells same-named registrations apart
+    std::string type;             // ECHO / SHARE_FILE / GET_FILE / SHELL / PIPE
     std::vector<std::string> args;
     uint32_t limit = 0;           // 0 = unlimited
     uint32_t started = 0;         // instances spawned so far (never decremented)
-    uint64_t finished = 0;        // instances completed
+    uint64_t active = 0;          // spawned instances still running
+    uint64_t finished = 0;        // spawned instances that have ended (any way)
     int owner_fd = -1;            // PIPE: the client socket; -1 for daemon-owned
     bool persisted = false;       // daemon-owned, written to the store
 };
@@ -132,13 +146,14 @@ struct Session {
     std::map<std::string, Reg> regs;  // the one registration table (daemon-owned + PIPE)
     std::map<uint64_t, std::unique_ptr<Instance>> insts;
     uint64_t next_id = 0;
+    uint64_t next_reg_serial = 1;  // 0 means "no registration"
     Millis last_active = 0;      // last tick this session had a pipe listening/running
     // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
     // end must never be destroyed while one of its own methods is on the stack.
     std::vector<uint64_t> want_close;
-    // Registrations to retire (LIMIT reached + drained). Deferred to tick() to
+    // Registrations to retire (LIMIT reached), by serial. Deferred to tick() to
     // avoid unregistering mid-callback.
-    std::vector<std::string> want_retire;
+    std::vector<uint64_t> want_retire;
 };
 
 class Daemon {
@@ -157,10 +172,12 @@ class Daemon {
     void dial(Session& s, Instance& in, Millis now);
     void route_to_tunnel(Session& s, Instance& in, ByteSpan b);
     void close_instance(Session& s, uint64_t id, bool finished);
-    size_t live_instances(Session& s, const std::string& name);
+    void add_reg(Session& s, const std::string& name, Reg reg);
+    void release_owner_fd(Session& s, int fd);  // close a PIPE owner socket nobody uses
     void watch_cfd(Session& s, Instance& in);
     void watch_local_fd(Session& s, Instance& in);  // watch a LocalEnd's watch_fd()
-    void unregister(Session& s, const std::string& name);  // remove a reg + its instances
+    // Remove a registration (live instances keep running); returns their ids.
+    std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
 
     // --- control plane ---
@@ -217,7 +234,8 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
     // the table is authoritative (REGISTER/UNREGISTER keep it and the disk in sync).
     if (store_)
         for (const auto& r : store_->list_pipes(rec.name))
-            s.regs[r.name] = Reg{r.type, r.args, r.limit, 0, 0, -1, true};
+            add_reg(s, r.name, Reg{.type = r.type, .args = r.args, .limit = r.limit,
+                                   .persisted = true});
     if (getenv("SPL_FORCE_RELAY")) pm->set_force_relay(true);  // test hook
     return true;
 }
@@ -348,7 +366,12 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                 return;
             }
             ++reg.started;
+            ++reg.active;
+            in.reg_serial = reg.serial;
             in.type = reg.type;
+            in.args = reg.args;
+            // Quota now spent: stop offering it right away (live instances carry on).
+            if (reg.limit && reg.started >= reg.limit) s.want_retire.push_back(reg.serial);
             if (reg.type == "PIPE") {
                 in.cfd = reg.owner_fd;  // shared with the registration
             } else {
@@ -544,50 +567,56 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         spl::write_all(in.follow_fd, fin.data(), fin.size());
         ::close(in.follow_fd);
     }
-    const std::string reg = in.reg;
-    const bool inbound = in.inbound;
-    if (inbound) {
-        if (auto rit = s.regs.find(reg); rit != s.regs.end() && finished) ++rit->second.finished;
+    // Count it against the registration that spawned it — only if that exact
+    // registration still exists (a same-named re-registration is a new one).
+    if (in.reg_serial) {
+        if (auto rit = s.regs.find(in.reg);
+            rit != s.regs.end() && rit->second.serial == in.reg_serial) {
+            --rit->second.active;
+            ++rit->second.finished;
+        }
     }
+    const int shared_fd = (in.cfd >= 0 && !in.cfd_owned) ? in.cfd : -1;
     spl::logf("[daemon] #%llu closed (%s, up %s down %s)", (unsigned long long)id,
               finished ? "done" : "aborted", human_bytes(in.up).c_str(),
               human_bytes(in.down).c_str());
     s.insts.erase(it);
-
-    // An N-shot registration that has spawned its quota and now has no live
-    // instances left is done: retire it (for a PIPE that closes the owner socket,
-    // so a chat host exits when the conversation ends; for a daemon-owned reg it
-    // deletes the file). Deferred to tick() to avoid re-entrancy.
-    if (inbound) {
-        auto rit = s.regs.find(reg);
-        if (rit != s.regs.end() && rit->second.limit &&
-            rit->second.started >= rit->second.limit && live_instances(s, reg) == 0)
-            s.want_retire.push_back(reg);
-    }
+    // An inbound PIPE instance shares its registration's owner socket. If the
+    // registration is already gone (unregistered/retired) and this was the last
+    // instance on it, close it now — that's what ends a chat host process.
+    if (shared_fd >= 0) release_owner_fd(s, shared_fd);
 }
 
-size_t Daemon::live_instances(Session& s, const std::string& name) {
-    size_t n = 0;
-    for (auto& [id, in] : s.insts)
-        if (in->inbound && in->reg == name) ++n;
-    return n;
+void Daemon::add_reg(Session& s, const std::string& name, Reg reg) {
+    reg.serial = s.next_reg_serial++;
+    s.regs[name] = std::move(reg);
 }
 
-// Remove a registration and tear down its live instances. PIPE: close the owner
-// socket. Daemon-owned + persisted: delete it from the store.
-void Daemon::unregister(Session& s, const std::string& name) {
+void Daemon::release_owner_fd(Session& s, int fd) {
+    for (const auto& [rname, reg] : s.regs)
+        if (reg.owner_fd == fd) return;
+    for (const auto& [id, in] : s.insts)
+        if (in->cfd == fd) return;
+    poller_.remove(fd);
+    ::close(fd);
+}
+
+// Remove a registration: stop offering it (and delete it from the store if it
+// was persisted). Its live instances keep running; their ids are returned so
+// the caller can tell the user. A PIPE's owner socket stays open while any of
+// them still uses it.
+std::vector<uint64_t> Daemon::unregister(Session& s, const std::string& name) {
+    std::vector<uint64_t> live;
     auto it = s.regs.find(name);
-    if (it == s.regs.end()) return;
-    std::vector<uint64_t> victims;
-    for (auto& [id, in] : s.insts)
-        if (in->inbound && in->reg == name) victims.push_back(id);
-    for (uint64_t id : victims) close_instance(s, id, false);
-    if (it->second.owner_fd >= 0) {
-        poller_.remove(it->second.owner_fd);
-        ::close(it->second.owner_fd);
-    }
+    if (it == s.regs.end()) return live;
+    const uint64_t serial = it->second.serial;
+    const int owner_fd = it->second.owner_fd;
+    for (const auto& [id, in] : s.insts)
+        if (in->reg_serial == serial) live.push_back(id);
     if (it->second.persisted && store_) store_->remove_pipe(s.name, name);
     s.regs.erase(it);
+    if (owner_fd >= 0) release_owner_fd(s, owner_fd);
+    return live;
 }
 
 void Daemon::tick(Millis now) {
@@ -613,7 +642,12 @@ void Daemon::tick(Millis now) {
             close_instance(s, s.want_close[i], true);
         s.want_close.clear();
 
-        for (const auto& reg : s.want_retire) unregister(s, reg);
+        for (uint64_t serial : s.want_retire)
+            for (const auto& [rname, reg] : s.regs)
+                if (reg.serial == serial) {
+                    unregister(s, rname);
+                    break;
+                }
         s.want_retire.clear();
 
         std::vector<uint64_t> expired;
@@ -746,7 +780,10 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         for (auto& [name, s] : sessions_) {
             std::vector<std::string> names;
             for (auto& [rname, reg] : s.regs) names.push_back(rname);
-            for (const auto& rname : names) unregister(s, rname);  // closes instances too
+            std::vector<uint64_t> live;
+            for (const auto& rname : names)
+                for (uint64_t id : unregister(s, rname)) live.push_back(id);
+            for (uint64_t id : live) close_instance(s, id, false);  // reset ends them too
         }
         return reply_close("OK\n");
     }
@@ -777,19 +814,28 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             write_str(fd, "OK\n");
             poller_.remove(fd);
             ctl_.erase(fd);  // the connection now is the pipe's local end
-            s->regs[name] = Reg{"PIPE", {}, limit, 0, 0, fd, false};
+            add_reg(*s, name, Reg{.type = "PIPE", .limit = limit, .owner_fd = fd});
+            const uint64_t serial = s->regs[name].serial;
             Session* sp = s;
-            poller_.set(fd, [this, sp, name, fd] {
-                // Bytes from the owner go to every active instance of this pipe
+            poller_.set(fd, [this, sp, name, serial, fd] {
+                // Bytes from the owner go to every live instance on this socket
                 // (one for chat; interleaving with several is the user's choice).
+                // Matched by fd, not name: they may outlive the registration.
                 uint8_t buf[kChunk];
                 ssize_t n = ::read(fd, buf, sizeof(buf));
-                if (n <= 0) {  // owner process went away -> pipe and instances die
-                    unregister(*sp, name);
+                if (n <= 0) {  // owner process went away -> its stream is gone
+                    std::vector<uint64_t> users;
+                    for (auto& [id, in] : sp->insts)
+                        if (in->inbound && in->cfd == fd) users.push_back(id);
+                    if (auto rit = sp->regs.find(name);
+                        rit != sp->regs.end() && rit->second.serial == serial)
+                        unregister(*sp, name);
+                    // The last of these closes (and unwatches) fd via release_owner_fd.
+                    for (uint64_t id : users) close_instance(*sp, id, true);
                     return;
                 }
                 for (auto& [id, in] : sp->insts)
-                    if (in->inbound && in->reg == name && in->open)
+                    if (in->inbound && in->cfd == fd && in->open)
                         route_to_tunnel(*sp, *in, ByteSpan(buf, static_cast<size_t>(n)));
             });
             return;
@@ -800,7 +846,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         if (!store_) return reply_close("ERR no config store\n");
         if (!store_->save_pipe(PipeRecord{s->name, name, type, limit, args}, &terr))
             return reply_close("ERR " + terr + "\n");
-        s->regs[name] = Reg{type, args, limit, 0, 0, -1, true};
+        add_reg(*s, name, Reg{.type = type, .args = args, .limit = limit, .persisted = true});
         return reply_close("OK\n");
     }
 
@@ -811,8 +857,21 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         if (!s) return reply_close("ERR " + err + "\n");
         const std::string& name = t[2];
         if (!s->regs.count(name)) return reply_close("ERR no pipe '" + name + "'\n");
-        unregister(*s, name);
-        return reply_close("OK\n");
+        const std::vector<uint64_t> live = unregister(*s, name);
+        if (live.empty()) return reply_close("OK\n");
+        // Tell the user their live connections survive, and how to end them.
+        std::string ids, hint;
+        for (uint64_t id : live) {
+            ids += (ids.empty() ? "#" : ", #") + std::to_string(id);
+            hint += (hint.empty() ? "spl close " : "; spl close ") + s->name + " " +
+                    std::to_string(id);
+        }
+        const std::string n = live.size() == 1 ? "1 connection" : std::to_string(live.size()) +
+                                                                       " connections";
+        return reply_close("OK note: " + n + " via '" + name + "' still active (" + ids +
+                           "); " + (live.size() == 1 ? "it keeps" : "they keep") +
+                           " running — " + hint + " to end " +
+                           (live.size() == 1 ? "it" : "them") + "\n");
     }
 
     if (cmd == "OPEN") {
@@ -834,6 +893,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         in->id = s->next_id++;
         in->want = t[2];
         in->type = t[ti];
+        in->args.assign(t.begin() + ti + 1, t.end());
         in->wait = wait;
         const Millis now = mono_ms();
         in->dial_deadline = wait ? std::numeric_limits<Millis>::max() : now + kDialDeadlineMs;
@@ -910,6 +970,12 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
 }
 
 namespace {
+std::string join_desc(const std::string& type, const std::vector<std::string>& args) {
+    std::string d = type;
+    for (const auto& a : args) d += " " + a;
+    return d;
+}
+
 // Minimal IPv6 text (8 hex groups, no :: compression — enough for status).
 std::string ip6_str(const proto::Ip6& a) {
     char buf[40];
@@ -963,45 +1029,33 @@ std::string Daemon::render_status(Millis now, bool verbose) {
             }
         }
 
-        // --- the registration table (daemon-owned + live PIPEs) ---
-        if (!s.regs.empty()) o << "  LISTENING\n";
+        // --- what we offer (daemon-owned + live PIPEs): counters only ---
+        if (!s.regs.empty()) o << "  OFFERED\n";
         for (const auto& [rname, reg] : s.regs) {
-            uint64_t active = 0;
-            for (const auto& [id, in] : s.insts)
-                if (in->inbound && in->reg == rname) ++active;
-            std::string desc = reg.type;
-            for (const auto& a : reg.args) desc += " " + a;
-            o << "    " << rname << "  " << desc << "  (" << reg.finished << " finished, " << active
-              << " active)";
+            o << "    " << rname << "  " << join_desc(reg.type, reg.args) << "  (" << reg.finished
+              << " finished, " << reg.active << " active)";
             if (verbose && reg.limit) o << "  [limit " << reg.started << "/" << reg.limit << "]";
             o << "\n";
-            for (const auto& [id, in] : s.insts) {
-                if (!in->inbound || in->reg != rname) continue;
-                o << "      #" << id;
-                if (verbose) o << "  " << in->type << (in->open ? " open" : " handshaking");
-                o << "  up " << human_bytes(in->up) << " down " << human_bytes(in->down);
-                if (in->local) o << " | " << in->local->describe();
-                o << "\n";
-            }
         }
 
-        // --- our outbound instances (created by OPEN) ---
-        bool any_out = false;
-        for (const auto& [id, in] : s.insts)
-            if (!in->inbound) any_out = true;
-        if (any_out) {
-            o << "  RUNNING\n";
-            for (const auto& [id, in] : s.insts) {
-                if (in->inbound) continue;
-                o << "    #" << id << "  -> " << name << ":" << in->want << "  " << in->type;
-                if (in->open)
-                    o << (verbose ? " open" : "");
-                else
-                    o << (in->wait ? " (waiting)" : " (connecting)");
-                o << "  up " << human_bytes(in->up) << " down " << human_bytes(in->down);
-                if (in->local) o << " | " << in->local->describe();
-                o << "\n";
-            }
+        // --- live connections, each showing what it connected to *at the time*
+        // (independent of the current registrations). Meta round-trips are internal.
+        bool any = false;
+        for (const auto& [id, in] : s.insts) {
+            // Skip internal meta round-trips and inbound handshakes not yet resolved.
+            if (in->meta || (in->inbound && !in->open)) continue;
+            if (!any) o << "  CONNECTIONS\n";
+            any = true;
+            o << "    #" << id << "  ";
+            if (in->inbound)
+                o << "in   " << in->reg;
+            else
+                o << "out  " << name << ":" << in->want;
+            o << "  " << join_desc(in->type, in->args);
+            if (!in->open) o << (in->wait ? " (waiting)" : " (connecting)");
+            o << "  up " << human_bytes(in->up) << " down " << human_bytes(in->down);
+            if (in->local) o << " | " << in->local->describe();
+            o << "\n";
         }
     }
     return o.str();

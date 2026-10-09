@@ -41,6 +41,15 @@ per-peer id space. The id is how an instance is shown in `STATUS` and how it is
 killed with `CLOSE`; a named registration additionally keeps simple counters
 (finished, active) across the instances it has spawned.
 
+**A registration is only an offer; instances are independent of it.** The daemon
+consults the registration table when the peer connects (and to answer `LIST`),
+and that's all. Each instance records the name it was reached by and the type +
+args offered *at that moment*, and shows those. `UNREGISTER` (or a `LIMIT`
+retiring) stops new connections but never touches live ones — the reply notes
+any that are still running and how to `CLOSE` them. A new registration under a
+reused name is a different registration: it starts at 0/0 and never adopts the
+old one's instances.
+
 Both kinds are daemon-owned: the daemon runs them, so the process that created
 them may exit (the one exception is the `PIPE` type, whose backing socket is the
 creating process — see below).
@@ -64,12 +73,13 @@ RESET                                        -> drop every registered pipe every
 ```
 
 `LIMIT <n>` makes a registration **N-shot**: it serves at most `n` instances over
-its lifetime (further connections are refused), and once `n` have been spawned
-and all have finished the registration is retired. Retiring a `PIPE` closes the
-owner's socket, so the host process exits too — this is how `chat` ends a session
-symmetrically (it registers with `LIMIT 1`, so the single conversation closing
-from *either* side tears down both ends). Retiring a daemon-owned registration
-deletes its stored file. `LIMIT` applies to **any** type: `spl inbox --limit N`
+its lifetime, and is retired as soon as the `n`-th has started (no longer offered;
+a daemon-owned one's stored file is deleted) while those instances run on. A
+`PIPE`'s owner socket *is* its byte stream, so it stays open until neither a
+registration nor a live instance uses it; then it closes and the host process
+exits — this is how `chat` ends a session symmetrically (it registers with
+`LIMIT 1`, so the single conversation closing from *either* side tears down both
+ends). `LIMIT` applies to **any** type: `spl inbox --limit N`
 is just a `GET_FILE` registration with `LIMIT N`, accepting exactly N pushes then
 retiring. Without `LIMIT` a registration serves connections indefinitely until
 explicitly removed.
@@ -102,7 +112,9 @@ drops live ones, and kills running instances.
   first just waits); `get` does not (a typo'd name should fail fast).
 - `CLOSE` kills any live instance by id — `OPEN`-created ones and instances
   spawned by our own named pipes alike (the registration itself stays and keeps
-  listening; it is removed with `UNREGISTER`).
+  listening; it is removed with `UNREGISTER`, which conversely leaves live
+  instances running). `RESET` is the big hammer: it removes every registration
+  *and* ends the instances they spawned.
 - Pipes may call these verbs too. A future coordinator pipe (e.g. directory
   transfer) registers ephemeral named pipes and `OPEN`s connections exactly
   like any other client. **Built-in types get no private interface** — this is
@@ -223,23 +235,24 @@ control connection (an `OPEN … FOLLOW`); `-b` detaches and the transfer shows 
 which adds the peer's side, both ULA addresses, the session uid, our
 relay-observed external address, the tx/rx byte split per path, and the full
 candidate table — every probed address with alive/rtt/last-reply). Per peer: the link state (relay or
-direct, RTT, liveness — the path manager's snapshot), then the pipes:
+direct, RTT, liveness — the path manager's snapshot), then what we offer (with
+counters only), then every live connection:
 
 ```
-PEER alice:                          direct 3ms (relay fallback armed)
-  LISTENING
-    mypdf       SHARE_FILE /home/user/file_to_share.pdf   (0 finished, 1 active)
-      #1          sending 48% (2.4/5.1 MB)
-    chat        PIPE                                      (1 finished, 0 active)
-  RUNNING
-    #0          GET_FILE /tmp/notes.md <- alice:notes     receiving 92% (1.1/1.2 MB)
-
-PEER bob:                            RELAY   (dormant: nothing listening or running)
+PEER alice: DIRECT via 192.168.1.20:41641 ~3ms | tx 2.4 MB rx 1.1 MB
+  OFFERED
+    mypdf  SHARE_FILE /home/user/file_to_share.pdf  (0 finished, 1 active)
+    chat  PIPE  (1 finished, 0 active)
+  CONNECTIONS
+    #0  out  alice:notes  GET_FILE /tmp/notes.md  up 40 B down 1.1 MB | receiving 92% (1.1/1.2 MB)
+    #1  in   mypdf  SHARE_FILE /home/user/file_to_share.pdf  up 2.4 MB down 12 B | sending 48% (2.4/5.1 MB)
 ```
 
-Instance ids (`#0`, `#1`, …) are unique per peer across both sections, so
-`CLOSE alice 1` kicks the inbound `mypdf` transfer just as `CLOSE alice 0`
-aborts our own fetch.
+Each connection shows the name it used and the type it got *when it connected*
+(`in` = the peer reached our offer, `out` = we opened theirs), so it stays
+truthful after an unregister or a same-named re-registration. Instance ids are
+unique per peer, so `CLOSE alice 1` kicks the inbound `mypdf` transfer just as
+`CLOSE alice 0` aborts our own fetch.
 
 ## Lifecycle
 

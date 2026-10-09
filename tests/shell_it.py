@@ -108,6 +108,56 @@ def main():
         assert med < 40, f"interactive round-trip too slow: median {med:.1f}ms (Nagle regression?)"
         print(f"  interactive round-trips snappy (median {med:.1f}ms)")
 
+        # registrations are only offers: unregistering one leaves a live session
+        # attached through it running (with a note), and a new, different
+        # registration under the same name doesn't take over that session.
+        q = subprocess.Popen([SPL, "shell", "thefollower"] + A, env=lenv, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+
+        def expect(tok, budget=5.0):
+            buf, end = b"", time.time() + budget
+            while time.time() < end:
+                r, _, _ = select.select([q.stdout], [], [], end - time.time())
+                if r:
+                    b = os.read(q.stdout.fileno(), 65536)
+                    if not b:
+                        return False
+                    buf += b
+                    if tok in buf:
+                        return True
+            return False
+
+        def say(cmd):
+            q.stdin.write(cmd.encode() + b"\n")
+            q.stdin.flush()
+
+        say("echo LIVE_$((1+1))")
+        assert expect(b"LIVE_2"), "shell did not come up"
+        r = run(fenv, "unregister", "theleader", "shell")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "still active" in r.stdout and "spl close theleader" in r.stdout, r.stdout
+        say("echo AFTER_$((2+3))")
+        assert expect(b"AFTER_5"), "unregistering the shell killed the live session"
+        print("  unregister keeps the live shell, and says so")
+
+        assert run(fenv, "register", "theleader", "shell", "ECHO").returncode == 0
+        st = run(fenv, "status").stdout
+        offered = st.split("OFFERED", 1)[1].split("CONNECTIONS", 1)[0]
+        conns = st.split("CONNECTIONS", 1)[1]
+        assert "shell  ECHO  (0 finished, 0 active)" in offered, st
+        assert "in   shell  SHELL" in conns, st  # the live one still shows what it attached to
+        say("exit")
+        try:
+            q.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            q.kill()
+        time.sleep(0.5)
+        st = run(fenv, "status").stdout
+        assert "shell  ECHO  (0 finished, 0 active)" in st, st  # old session isn't counted here
+        assert "in   shell  SHELL" not in st, st
+        run(fenv, "unregister", "theleader", "shell")
+        print("  re-registering a name doesn't adopt the old session")
+
         for env in (lenv, fenv):
             run(env, "stop")
         print("SHELL PASSED")
