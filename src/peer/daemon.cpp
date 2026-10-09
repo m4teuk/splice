@@ -23,6 +23,7 @@
 #include "common/log.h"
 #include "common/time.h"
 #include "net/poller.h"
+#include "net/private_ipc.h"
 #include "net/socket.h"
 #include "peer/netstack.h"
 #include "peer/pathman.h"
@@ -665,6 +666,12 @@ void Daemon::accept_ctl() {
     for (;;) {
         int fd = ::accept(lfd_, nullptr, nullptr);
         if (fd < 0) return;
+        // Only our own user may drive the daemon (the 0700 dir already ensures
+        // this; the kernel's word on the peer uid is a second, independent check).
+        if (net::socket_peer_uid(fd) != ::getuid()) {
+            ::close(fd);
+            continue;
+        }
         ctl_[fd] = "";
         poller_.set(fd, [this, fd] { on_ctl_readable(fd); });
     }
@@ -1075,15 +1082,26 @@ int Daemon::run() {
 }  // namespace
 
 std::string runtime_dir() {
-    std::string dir;
-    if (const char* d = std::getenv("SPL_RUNTIME_DIR")) {
-        dir = d;
-    } else if (const char* x = std::getenv("XDG_RUNTIME_DIR")) {
-        dir = std::string(x) + "/spl";
-    } else {
-        dir = "/tmp/spl-" + std::to_string(getuid());
-    }
-    ::mkdir(dir.c_str(), 0700);
+    // Resolved and checked once per process (a forked daemon inherits it).
+    static const std::string dir = [] {
+        std::string d;
+        if (const char* e = std::getenv("SPL_RUNTIME_DIR"); e && *e) {
+            d = e;
+        } else if (const char* x = std::getenv("XDG_RUNTIME_DIR"); x && *x) {
+            d = std::string(x) + "/spl";
+        } else {
+            const char* t = std::getenv("TMPDIR");  // per-user on macOS; usually unset on Linux
+            std::string base = (t && *t) ? t : "/tmp";
+            while (base.size() > 1 && base.back() == '/') base.pop_back();
+            d = base + "/spl-" + std::to_string(getuid());
+        }
+        std::string err;
+        if (!net::ensure_private_dir(d, &err)) {
+            spl::logf("spl: %s", err.c_str());
+            std::exit(1);
+        }
+        return d;
+    }();
     return dir;
 }
 

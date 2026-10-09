@@ -14,6 +14,7 @@
 #include "common/io.h"
 #include "common/log.h"
 #include "common/time.h"
+#include "net/private_ipc.h"
 
 namespace spl::peer {
 
@@ -69,6 +70,16 @@ int daemon_connect() {
     if (::connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) != 0) {
         ::close(fd);
         return -1;
+    }
+    // Never talk to a daemon run by another user: it would see our commands
+    // (and, for `spl shell`, our keystrokes).
+    if (net::socket_peer_uid(fd) != ::getuid()) {
+        ::close(fd);
+        spl::logf("spl: %s is served by another user's process, not yours.\n"
+                  "  Someone on this machine may be trying to intercept spl's control socket.\n"
+                  "  Refusing to connect.",
+                  path.c_str());
+        std::exit(1);
     }
     return fd;
 }

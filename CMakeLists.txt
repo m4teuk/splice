@@ -65,6 +65,7 @@ add_library(spl_net STATIC
   src/net/socket.cpp
   src/net/tls.cpp
   src/net/poller.cpp
+  src/net/private_ipc.cpp
 )
 target_include_directories(spl_net PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(spl_net PUBLIC spl_core OpenSSL::SSL OpenSSL::Crypto)
@@ -186,6 +187,7 @@ if(SPL_BUILD_TESTS)
     tests/test_wg.cpp
     tests/test_netstack.cpp
     tests/test_config.cpp
+    tests/test_private_ipc.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -243,6 +245,12 @@ if(SPL_BUILD_TESTS)
     add_test(NAME shell_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/shell_it.py $<TARGET_FILE:spl>)
     set_tests_properties(shell_integration PROPERTIES TIMEOUT 120)
+
+    # The daemon socket dir fallback refuses planted symlinks/files and tightens
+    # our own too-open dir.
+    add_test(NAME runtime_dir_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/runtime_dir_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(runtime_dir_integration PROPERTIES TIMEOUT 60)
 
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration

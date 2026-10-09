@@ -49,7 +49,10 @@ creating process — see below).
 
 Clients (the `spl` CLI, scripts, and **pipe implementations themselves**) talk
 to the daemon over a per-user unix socket (`$XDG_RUNTIME_DIR/spl/daemon.sock`,
-no root anywhere). The verbs:
+else `${TMPDIR:-/tmp}/spl-<uid>/daemon.sock`; no root anywhere). The directory
+must be a real 0700 directory owned by you — spl refuses a planted symlink or
+another user's directory — and both ends check the other's uid with the kernel.
+The verbs:
 
 ```
 REGISTER   <peer> <pipe_id> [LIMIT <n>] <type> <args…> -> OK | error (e.g. collision)
