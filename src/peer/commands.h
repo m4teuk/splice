@@ -34,8 +34,9 @@ struct PeerSubDef {
     bool alias;
 };
 inline constexpr PeerSubDef kPeerSubcommands[] = {
-    {"ls", false}, {"show", false}, {"rename", false}, {"remove", false},
-    {"list", true}, {"rm", true},
+    {"ls", false},          {"show", false},           {"rename", false},
+    {"remove", false},      {"add-address", false},    {"remove-address", false},
+    {"list", true},         {"rm", true},
 };
 
 inline bool is_managed_command(std::string_view name) {

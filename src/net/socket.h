@@ -63,6 +63,17 @@ uint16_t local_port(int fd);
 // link-local addresses are skipped. Best-effort: empty if enumeration fails.
 std::vector<Endpoint> local_interface_endpoints(uint16_t port);
 
+// The IPv4 broadcast address of every up, non-loopback interface, with `port` —
+// where a LAN discovery query goes to reach everyone on each attached network.
+std::vector<Endpoint> broadcast_endpoints(uint16_t port);
+
+// Dual-stack UDP socket on [::]:port that other processes may bind too
+// (SO_REUSEPORT): broadcasts reach every socket sharing the port, so several
+// users' daemons on one machine can all listen for LAN discovery.
+Fd udp_bind_shared(uint16_t port, std::string* err);
+
+bool set_broadcast(int fd);  // allow sending to broadcast addresses
+
 bool set_nonblocking(int fd, bool nb);
 bool set_recv_timeout(int fd, int ms);
 

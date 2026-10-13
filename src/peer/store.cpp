@@ -59,13 +59,18 @@ std::optional<ConnRecord> parse_file(const std::string& path) {
     std::ifstream f(path);
     if (!f) return std::nullopt;
     std::map<std::string, std::string> kv;
+    ConnRecord r;
     std::string line;
     while (std::getline(f, line)) {
         auto pos = line.find(": ");
         if (pos == std::string::npos) continue;
-        kv[line.substr(0, pos)] = line.substr(pos + 2);
+        const std::string key = line.substr(0, pos), val = line.substr(pos + 2);
+        if (key == "address") {  // repeatable
+            if (parse_address_hint(val, nullptr, nullptr)) r.addresses.push_back(val);
+            continue;
+        }
+        kv[key] = val;
     }
-    ConnRecord r;
     auto it = kv.find("name");
     if (it == kv.end()) return std::nullopt;
     r.name = it->second;
@@ -81,6 +86,41 @@ std::optional<ConnRecord> parse_file(const std::string& path) {
 }
 
 }  // namespace
+
+bool parse_address_hint(const std::string& hint, std::string* host, uint16_t* port) {
+    std::string h = hint, p;
+    bool has_port = false;
+    if (!h.empty() && h[0] == '[') {  // [v6] or [v6]:port
+        const size_t close = h.find(']');
+        if (close == std::string::npos) return false;
+        if (close + 1 < h.size()) {
+            if (h[close + 1] != ':') return false;
+            p = h.substr(close + 2);
+            has_port = true;
+        }
+        h = h.substr(1, close - 1);
+    } else if (std::count(h.begin(), h.end(), ':') == 1) {  // host:port (a bare v6 has more)
+        p = h.substr(h.find(':') + 1);
+        h = h.substr(0, h.find(':'));
+        has_port = true;
+    }
+    if (h.empty() || h.size() > 253) return false;
+    for (char c : h)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-' || c == '_' ||
+              c == ':' || c == '%'))
+            return false;
+    long pn = 0;
+    if (has_port) {
+        if (p.empty() || p.size() > 5) return false;
+        for (char c : p)
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        pn = std::atol(p.c_str());
+        if (pn < 1 || pn > 65535) return false;
+    }
+    if (host) *host = h;
+    if (port) *port = static_cast<uint16_t>(pn);
+    return true;
+}
 
 std::optional<Store> Store::open(std::string* err) {
     std::string dir = resolve_dir();
@@ -106,6 +146,7 @@ bool Store::save(const ConnRecord& r, std::string* err) {
       << "own_pub: " << base64_encode(as_span(r.own_pub)) << "\n"
       << "peer_pub: " << base64_encode(as_span(r.peer_pub)) << "\n"
       << "created: " << r.created_unix << "\n";
+    for (const auto& a : r.addresses) s << "address: " << a << "\n";
     const std::string body = s.str();
 
     // Write to a 0600 temp file (the private key is never briefly world-readable),

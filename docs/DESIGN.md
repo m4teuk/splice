@@ -91,6 +91,11 @@ start on RELAY  (works once both peers register)
 
 WireGuard's endpoint roaming means the session migrates between paths seamlessly.
 
+The relay is optional. The daemon resolves it in the background and runs without
+it (offline, DNS down), and **LAN discovery** (below) finds a paired peer on the
+local network with no server involved — so two paired machines on one network
+work with no internet at all.
+
 ## Userspace networking (no root)
 
 Inner IP packets are produced/consumed by an in-process **lwIP** stack
@@ -121,6 +126,53 @@ the **lowest-RTT alive** candidate (with hysteresis to avoid flapping), so the
 fastest reachable path wins on its own merits — the real LAN over an overlay hop,
 an overlay over the relay — without us trusting or blacklisting any address. Every
 path is WireGuard-encrypted, so a failed or stray probe costs nothing.
+
+### LAN discovery (no server)
+
+While a session is active it asks the local networks whether its peer is there —
+a few quick queries when a search starts (activation, a lost direct path, an
+edited address hint, our own interfaces changing), then one every 30 s for as
+long as it stays active, **also with a direct path up**:
+
+```
+query   raw UDP, from the asking session's own socket, to every interface's
+        broadcast address (and every address hint) on port 7701:
+          "SPLQ" ‖ nonce[16] ‖ HMAC(k_pair, "who" ‖ side ‖ nonce)[:16]
+answer  disco, from the answering session's own socket, unicast to the asker:
+          HERE 0x04 ‖ nonce[16] ‖ HMAC(k_pair, "here" ‖ side ‖ nonce)[:16]
+```
+
+`k_pair = HKDF(X25519(own_priv, peer_pub), "spl/lan-discovery/v1")` — a secret
+both sides derive from the keys they already store, so discovery needs no pairing
+change and reveals nothing to bystanders (a fresh random nonce makes every query
+unlinkable). The daemon listens on the shared discovery port (`SO_REUSEPORT`, so
+several users' daemons on one machine all hear broadcasts), checks a query's MAC
+against each *active* session's key, and lets the match answer. Neither packet
+carries an address: the **source** of a verified packet is the candidate, so one
+exchange gives each side the other's. The `side` byte keeps a peer from accepting
+its own looped-back packet, the two labels keep a query from being replayed as an
+answer, and answered nonces are remembered against replays. Verification only
+earns a candidate a probe — PING/PONG and WireGuard still decide what's alive.
+
+**Address hints** (`spl peer add-address <peer> <host[:port]>`) are extra unicast
+targets for the same query — for networks with no broadcast between the peers
+(Tailscale, another subnet, a VPN). They are resolved off the event loop and are
+never authoritative: just one more place to ask. One side having the hint is
+enough. (Two daemons on *one* machine can't both receive a unicast query on the
+shared port — hints address a machine, broadcasts reach every daemon on it.)
+
+Test hooks: `SPL_LAN_PORT` moves the discovery port and
+`SPL_LAN_TARGETS=host:port,…` replaces broadcasting with explicit targets.
+
+**A working path is never the end of the search.** With a direct path up the
+manager still pings every known candidate each second (so a faster one takes
+over), keeps sending the slow LAN query, re-sends CALLME every 30 s, and
+re-reads its own interface addresses every 10 s — a change there (or in the
+external address whereami reports) advertises the new set at once and restarts
+the quick search. So two machines talking across the internet move to the LAN
+shortly after they join the same network. Candidates that neither answer nor are
+re-reported for 2 minutes are dropped, so old networks' addresses don't
+accumulate.
 
 The path manager keeps the relay mapping and (once known) the direct path warm
 with keepalives, and reverts to the relay if no direct packet arrives for ~3 s;

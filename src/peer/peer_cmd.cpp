@@ -2,6 +2,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <sstream>
@@ -198,6 +199,11 @@ void peer_usage() {
         "  show <name>             everything about one peer\n"
         "  rename <old> <new>      rename a peer\n"
         "  remove <name>           forget a peer (unpair)\n"
+        "  add-address <name> <host[:port]>      also look for the peer at this address\n"
+        "  remove-address <name> <host[:port]>   stop looking there\n"
+        "\n"
+        "addresses are hints (a LAN IP, a Tailscale name, …): the daemon asks there as\n"
+        "well as broadcasting and using the relay, and takes whatever answers first.\n"
         "\n"
         "pair with a new peer:  spl pair\n"
         "what a peer offers:    spl ls <peer>");
@@ -228,6 +234,52 @@ int do_show(const std::string& name) {
     std::printf("  their key  %s\n", base64_encode(as_span(r->peer_pub)).c_str());
     std::printf("  your key   %s\n", base64_encode(as_span(r->own_pub)).c_str());
     std::printf("  paired     %s\n", paired_date(r->created_unix).c_str());
+    for (size_t i = 0; i < r->addresses.size(); ++i)
+        std::printf("  %s  %s  (added)\n", i == 0 ? "addresses" : "         ",
+                    r->addresses[i].c_str());
+    return 0;
+}
+
+int do_address(const std::string& name, const std::string& addr, bool add) {
+    std::string err;
+    auto store = Store::open(&err);
+    if (!store) {
+        spl::logf("%s", err.c_str());
+        return 1;
+    }
+    auto r = store->load(name);
+    if (!r) {
+        spl::logf("no peer named '%s' (see: spl peer ls)", name.c_str());
+        return 1;
+    }
+    auto it = std::find(r->addresses.begin(), r->addresses.end(), addr);
+    if (add) {
+        if (!parse_address_hint(addr, nullptr, nullptr)) {
+            spl::logf("'%s' is not an address — use a host or IP, optionally with a port: "
+                      "10.0.0.5, laptop.example.net, 10.0.0.5:7701, [fd00::5]:7701",
+                      addr.c_str());
+            return 2;
+        }
+        if (it != r->addresses.end()) {
+            std::printf("'%s' already has address %s\n", name.c_str(), addr.c_str());
+            return 0;
+        }
+        r->addresses.push_back(addr);
+    } else {
+        if (it == r->addresses.end()) {
+            spl::logf("'%s' has no address %s (see: spl peer show %s)", name.c_str(), addr.c_str(),
+                      name.c_str());
+            return 1;
+        }
+        r->addresses.erase(it);
+    }
+    if (!store->save(*r, &err)) {
+        spl::logf("could not save: %s", err.c_str());
+        return 1;
+    }
+    std::printf("%s address %s %s '%s'\n", add ? "added" : "removed", addr.c_str(),
+                add ? "to" : "from", name.c_str());
+    notify_peers_changed();
     return 0;
 }
 
@@ -246,9 +298,13 @@ int do_list() {
     for (const auto& n : names) {
         auto r = store->load(n);
         if (!r) continue;
-        std::printf("%-20s  %-8s  %s  (paired %s)\n", n.c_str(), r->side ? "follower" : "leader",
+        std::printf("%-20s  %-8s  %s  (paired %s)", n.c_str(), r->side ? "follower" : "leader",
                     base64_encode(as_span(r->peer_pub)).c_str(),
                     paired_date(r->created_unix).c_str());
+        if (!r->addresses.empty())
+            std::printf("  %zu address%s", r->addresses.size(),
+                        r->addresses.size() == 1 ? "" : "es");
+        std::printf("\n");
     }
     return 0;
 }
@@ -438,6 +494,13 @@ int peer_group_main(int argc, char** argv) {
             return 2;
         }
         return do_remove(argv[2]);
+    }
+    if (sub == "add-address" || sub == "remove-address") {
+        if (argc != 4) {
+            peer_usage();
+            return 2;
+        }
+        return do_address(argv[2], argv[3], sub == "add-address");
     }
     spl::logf("spl peer: unknown command '%s'", sub.c_str());
     peer_usage();

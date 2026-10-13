@@ -25,6 +25,8 @@ the relay server.
 - All of it **end-to-end encrypted** (WireGuard), **without root** (no TUN
   device, no `sudo`), going **directly** between the two machines whenever the
   network allows and falling back to the relay only when it must.
+- **Works with no internet at all** between paired devices on the same network:
+  they find each other by local discovery, no server involved.
 
 ## Install
 
@@ -109,6 +111,8 @@ spl reload                            make the daemon re-read the peer files (af
 spl config                            show the config file path and current values
 spl peer ls | show <peer>             list paired peers / everything about one
 spl peer rename <old> <new> | remove <peer>   manage paired peers
+spl peer add-address <peer> <host[:port]>     also look for the peer there (LAN IP, Tailscale name…)
+spl peer remove-address <peer> <host[:port]>
 spl update                            re-run the installer to get the latest spl
 
 spl register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, PIPE)

@@ -93,6 +93,45 @@ struct ServerLookup {
     bool tried = false;  // the first attempt finished (either way)
 };
 
+// Resolves address-hint hosts off the event loop (same reason as ServerLookup),
+// one short-lived thread per lookup. get() returns the latest known address and
+// (re)starts a lookup when due: a known host is refreshed every minute (its IP
+// may change), an unknown one retried every 15s.
+class HintResolver {
+ public:
+    std::optional<Endpoint> get(const std::string& host, uint16_t port, Millis now) {
+        std::lock_guard<std::mutex> lk(st_->m);
+        Entry& e = st_->hosts[host];
+        if (!e.pending && now >= e.next) {
+            e.pending = true;
+            e.next = now + (e.ep ? 60'000 : 15'000);
+            std::thread([st = st_, host] {
+                auto ep = net::resolve(host, 1);
+                std::lock_guard<std::mutex> lk(st->m);
+                Entry& e = st->hosts[host];
+                if (ep) e.ep = ep;
+                e.pending = false;
+            }).detach();
+        }
+        if (!e.ep) return std::nullopt;
+        Endpoint out = *e.ep;
+        out.port = port;
+        return out;
+    }
+
+ private:
+    struct Entry {
+        std::optional<Endpoint> ep;
+        bool pending = false;
+        Millis next = 0;
+    };
+    struct State {
+        std::mutex m;
+        std::map<std::string, Entry> hosts;
+    };
+    std::shared_ptr<State> st_ = std::make_shared<State>();
+};
+
 // One live spliced connection (an instance of a pipe pair).
 struct Instance {
     uint64_t id = 0;
@@ -194,6 +233,8 @@ class Daemon {
     std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
     void adopt_server();  // pick up a (late) relay resolution and hand it to every session
+    void on_lan_discovery();  // a query arrived on the shared discovery port
+    void refresh_hints(Millis now);  // hand each session its resolved address hints
     std::string reload();  // reconcile sessions with the peer files; returns a summary
     void drop_session(const std::string& name);  // end a peer's session and everything on it
 
@@ -214,6 +255,12 @@ class Daemon {
     std::optional<Store> store_;
     net::Poller poller_;
     int lfd_ = -1;  // unix listen socket
+    // LAN discovery: the shared UDP port we hear peers' queries on (see pathman.h).
+    net::Fd lan_fd_;
+    uint16_t lan_port_ = kLanDiscoPort;
+    std::vector<Endpoint> lan_targets_;  // SPL_LAN_TARGETS (tests): replaces broadcasting
+    HintResolver hints_;
+    Timer t_hints_;
     std::map<std::string, Session> sessions_;
     std::map<int, std::string> ctl_;  // control conns mid-command: fd -> line buffer
 };
@@ -239,6 +286,8 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
     cfg.own_priv = rec.own_priv;
     cfg.peer_pub = rec.peer_pub;
     cfg.server = server_;
+    cfg.lan_port = lan_port_;
+    cfg.lan_targets = lan_targets_;
     s.pm = std::make_unique<PathManager>(std::move(udp), cfg);
     s.ns = std::make_unique<Netstack>();
     s.ns->configure(s.own);
@@ -712,6 +761,42 @@ std::string Daemon::reload() {
            std::to_string(gone.size()) + " removed, " + std::to_string(moved.size()) + " renamed";
 }
 
+// A LAN discovery query: find the session whose peer sent it (only they can
+// produce its MAC) and let that session answer from its own socket. We answer
+// only for peers we're active with — nothing offered or running means nothing
+// to reach, and an idle daemon stays silent.
+void Daemon::on_lan_discovery() {
+    uint8_t buf[256];
+    for (;;) {
+        sockaddr_storage ss{};
+        socklen_t slen = sizeof(ss);
+        ssize_t n = ::recvfrom(lan_fd_.get(), buf, sizeof(buf), 0,
+                               reinterpret_cast<sockaddr*>(&ss), &slen);
+        if (n < 0) return;
+        const ByteSpan pkt(buf, static_cast<size_t>(n));
+        if (!PathManager::is_lan_query(pkt)) continue;
+        const Endpoint src = endpoint_from_sockaddr(ss);
+        for (auto& [name, s] : sessions_) {
+            if (!s.pm->active() || !s.pm->lan_query_from_peer(pkt)) continue;
+            s.pm->answer_lan_query(src, pkt, mono_ms());
+            break;
+        }
+    }
+}
+
+void Daemon::refresh_hints(Millis now) {
+    for (auto& [name, s] : sessions_) {
+        std::vector<Endpoint> eps;
+        for (const auto& a : s.rec.addresses) {
+            std::string host;
+            uint16_t port = 0;
+            if (!parse_address_hint(a, &host, &port)) continue;
+            if (auto ep = hints_.get(host, port ? port : lan_port_, now)) eps.push_back(*ep);
+        }
+        s.pm->set_lan_hints(std::move(eps));
+    }
+}
+
 void Daemon::adopt_server() {
     {
         std::lock_guard<std::mutex> lk(lookup_->m);
@@ -724,6 +809,7 @@ void Daemon::adopt_server() {
 
 void Daemon::tick(Millis now) {
     if (!server_.valid()) adopt_server();
+    if (t_hints_.due(now, 500)) refresh_hints(now);
     bool any_busy = false;
     for (auto& [name, s] : sessions_) {
         // Activity gate: full disco only while something is listening or running,
@@ -871,7 +957,11 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         return reply_close("OK\n" + render_status(mono_ms(), verbose));
     }
 
-    if (cmd == "RELOAD") return reply_close("OK " + reload() + "\n");
+    if (cmd == "RELOAD") {
+        const std::string summary = reload();
+        t_hints_.rearm();  // edited address hints take effect on the next tick
+        return reply_close("OK " + summary + "\n");
+    }
 
     if (cmd == "FORCE_RELAY") {  // debug/test: pin a session to the relay (1) or release (0)
         if (t.size() != 3) return reply_close("ERR usage: FORCE_RELAY <peer> <0|1>\n");
@@ -1221,6 +1311,34 @@ int Daemon::run() {
     if (!server_.valid())
         spl::logf("daemon: cannot resolve relay %s yet; running without it (retrying)",
                   opts_.server.c_str());
+
+    // LAN discovery socket. Test hooks: SPL_LAN_PORT moves it (two daemons on one
+    // host), SPL_LAN_TARGETS="host:port,…" replaces broadcasting with those targets.
+    if (const char* v = std::getenv("SPL_LAN_PORT"); v && std::atoi(v) > 0)
+        lan_port_ = static_cast<uint16_t>(std::atoi(v));
+    if (const char* v = std::getenv("SPL_LAN_TARGETS")) {
+        std::istringstream is(v);
+        std::string item;
+        while (std::getline(is, item, ',')) {
+            const size_t colon = item.rfind(':');
+            if (colon == std::string::npos) continue;
+            if (auto ep = net::resolve(item.substr(0, colon),
+                                       static_cast<uint16_t>(std::atoi(item.c_str() + colon + 1))))
+                lan_targets_.push_back(*ep);
+        }
+    }
+    {
+        std::string lerr;
+        lan_fd_ = net::udp_bind_shared(lan_port_, &lerr);
+        if (lan_fd_) {
+            net::set_nonblocking(lan_fd_.get(), true);
+            poller_.set(lan_fd_.get(), [this] { on_lan_discovery(); });
+        } else {
+            spl::logf("daemon: LAN discovery port %u unavailable (%s); peers on the local "
+                      "network won't find us by broadcast",
+                      lan_port_, lerr.c_str());
+        }
+    }
 
     const std::string path = daemon_socket_path();
     ::unlink(path.c_str());

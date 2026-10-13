@@ -21,7 +21,14 @@ struct ConnRecord {
     proto::WgKey own_pub{};       // this side's X25519 public key
     proto::WgKey peer_pub{};      // peer's X25519 public key
     int64_t created_unix = 0;
+    // Address hints (`spl peer add-address`): hosts where this peer may be found
+    // — "host", "host:port" or "[v6]:port"; the port defaults to the LAN
+    // discovery port. Only ever *extra* places to ask; never authoritative.
+    std::vector<std::string> addresses;
 };
+
+// Splits an address hint into host and port (0 = unspecified). False if malformed.
+bool parse_address_hint(const std::string& hint, std::string* host, uint16_t* port);
 
 // A persistent named pipe registration (daemon-owned types only; PIPE
 // registrations live and die with their owning process). One file per pipe

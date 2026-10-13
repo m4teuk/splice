@@ -23,11 +23,13 @@
 // no logging — observers read the status() snapshot.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <vector>
 
+#include "common/bytes.h"
 #include "common/time.h"
 #include "net/endpoint.h"
 #include "net/socket.h"
@@ -56,7 +58,14 @@ struct PathConfig {
     proto::WgKey own_priv;
     proto::WgKey peer_pub;
     Endpoint server;       // resolved rendezvous/relay server address
+    // LAN discovery: the port queries are broadcast to, and (tests) explicit
+    // targets replacing the per-interface broadcast addresses.
+    uint16_t lan_port = 0;
+    std::vector<Endpoint> lan_targets;
 };
+
+// The well-known UDP port daemons listen on for LAN discovery queries.
+inline constexpr uint16_t kLanDiscoPort = 7701;
 
 // Read-only snapshot of the path state, for status displays. The path manager
 // never renders or logs; this is its single observation surface.
@@ -103,6 +112,7 @@ class PathManager {
             t_whereami_.rearm();
             t_callme_.rearm();
             t_ping_.rearm();
+            restart_lan_search();
         }
         active_ = a;
     }
@@ -115,6 +125,24 @@ class PathManager {
         t_whereami_.rearm();
     }
 
+    // --- LAN discovery (no server involved) ---
+    // While no direct path is up we broadcast "is my peer here?" queries from our
+    // own socket; the peer's daemon hears them on the shared discovery port and
+    // hands them to its matching session, which answers from *its* socket. Both
+    // packets are MACed with a key only the two paired peers can derive, and the
+    // address to use is simply the packet's source — so one verified exchange
+    // gives each side the other's direct candidate. Verification only earns a
+    // candidate a probe: the usual PING/PONG + WireGuard still decide liveness.
+    // Extra places to send the query (address hints), besides the broadcasts.
+    void set_lan_hints(std::vector<Endpoint> hints) {
+        if (hints == lan_hints_) return;
+        lan_hints_ = std::move(hints);
+        restart_lan_search();
+    }
+    static bool is_lan_query(ByteSpan pkt);
+    bool lan_query_from_peer(ByteSpan pkt) const;                      // MAC check
+    void answer_lan_query(const Endpoint& src, ByteSpan pkt, Millis now);  // after the check
+
     // Pin to the relay and ignore the direct path (used to simulate direct loss).
     void set_force_relay(bool f) { force_relay_ = f; }
 
@@ -125,6 +153,7 @@ class PathManager {
         bool lan = false;    // a peer LAN address (vs the NAT'd external path)
         Millis last_rx = 0;  // last inbound datagram from this address (0 = never)
         Millis srtt = 0;     // smoothed PONG round-trip (ms); 0 = not yet measured
+        Millis learned = 0;  // last time something told us about it (CALLME, discovery, traffic)
     };
 
     void process(const Endpoint& src, ByteSpan raw, Millis now);
@@ -142,7 +171,15 @@ class PathManager {
     void emit_udp(const Endpoint& ep, ByteSpan data);  // central egress (applies SPL_LOSS)
 
     DirectCand* find_cand(const Endpoint& ep);
-    void add_cand(const Endpoint& ep, bool lan);        // register a probe target (deduped)
+    // Register a probe target (deduped; re-learning one keeps it from going stale).
+    void add_cand(const Endpoint& ep, bool lan, Millis now);
+    void prune_cands(Millis now);  // forget addresses that are dead and no longer reported
+    void refresh_local_addrs();    // re-read our interfaces; a change restarts the search
+    void send_lan_query();
+    void restart_lan_search() {  // query promptly again (activation / direct path lost)
+        lan_queries_ = 0;
+        t_lan_.rearm();
+    }
     void touch_cand(const Endpoint& from, Millis now);  // record inbound liveness
     void choose_direct(Millis now);  // pick the active path (lowest-RTT alive candidate)
 
@@ -160,7 +197,13 @@ class PathManager {
 
     std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 
-    Timer t_tick_, t_register_, t_whereami_, t_callme_, t_ping_;
+    Timer t_tick_, t_register_, t_whereami_, t_callme_, t_ping_, t_lan_, t_housekeep_;
+    std::vector<Endpoint> lan_hints_;
+    Bytes lan_key_;                 // per-pair discovery key (from the X25519 static DH)
+    bool side_ = false;             // our side bit; binds each MAC to its sender's role
+    int lan_queries_ = 0;           // queries sent in the current search (fast, then slow)
+    std::vector<std::array<uint8_t, 16>> lan_sent_;  // nonces of our recent queries
+    std::vector<std::array<uint8_t, 16>> lan_seen_;  // nonces of queries we answered (anti-replay)
     // throughput counters (bytes), split by path
     uint64_t tx_direct_ = 0, tx_relay_ = 0, rx_direct_ = 0, rx_relay_ = 0;
     double loss_ = 0.0;  // SPL_LOSS: fraction of egress packets to drop (testing)

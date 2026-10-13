@@ -39,8 +39,9 @@ def main():
 
         # `spl peer` is the one home for managing paired peers
         assert "peer" in cmds, cmds
-        assert comp(lenv, 2, "spl", "peer") == ["ls", "show", "rename", "remove"]
-        for sub in ("show", "rename", "remove"):
+        assert comp(lenv, 2, "spl", "peer") == ["ls", "show", "rename", "remove", "add-address",
+                                                 "remove-address"]
+        for sub in ("show", "rename", "remove", "add-address", "remove-address"):
             assert "thefollower" in comp(lenv, 3, "spl", "peer", sub), sub
         assert comp(lenv, 3, "spl", "peer", "ls") == []
         assert "thefollower" in comp(lenv, 2, "spl", "ls")  # ls <peer> = what they offer

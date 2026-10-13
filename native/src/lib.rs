@@ -74,6 +74,24 @@ pub unsafe extern "C" fn spl_wg_keypair(out_priv: *mut u8, out_pub: *mut u8) {
     copy_nonoverlapping(public.as_bytes().as_ptr(), out_pub, 32);
 }
 
+/// X25519 Diffie-Hellman of our private key with the peer's public key: the same
+/// 32 bytes on both sides of a pairing, so it yields a per-pair secret from keys
+/// both already hold (used to key LAN discovery — never used directly).
+///
+/// # Safety
+/// `priv_key` and `peer_pub` must each point to 32 readable bytes; `out` to 32
+/// writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn spl_x25519(priv_key: *const u8, peer_pub: *const u8, out: *mut u8) {
+    use x25519_dalek::{PublicKey, StaticSecret};
+    let mut sk = [0u8; 32];
+    let mut pk = [0u8; 32];
+    copy_nonoverlapping(priv_key, sk.as_mut_ptr(), 32);
+    copy_nonoverlapping(peer_pub, pk.as_mut_ptr(), 32);
+    let shared = StaticSecret::from(sk).diffie_hellman(&PublicKey::from(pk));
+    copy_nonoverlapping(shared.as_bytes().as_ptr(), out, 32);
+}
+
 // ---- SPAKE2 (symmetric) ----
 //
 // Both peers run the symmetric variant with the same 6-digit password and the

@@ -149,6 +149,46 @@ uint16_t local_port(int fd) {
     return 0;
 }
 
+std::vector<Endpoint> broadcast_endpoints(uint16_t port) {
+    std::vector<Endpoint> out;
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return out;
+    for (ifaddrs* p = ifs; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        if (!(p->ifa_flags & IFF_UP) || (p->ifa_flags & IFF_LOOPBACK)) continue;
+        if (!(p->ifa_flags & IFF_BROADCAST) || !p->ifa_broadaddr) continue;
+        sockaddr_storage ss{};
+        std::memcpy(&ss, p->ifa_broadaddr, sizeof(sockaddr_in));
+        Endpoint e = endpoint_from_sockaddr(ss);
+        e.port = port;
+        if (std::find(out.begin(), out.end(), e) == out.end()) out.push_back(e);
+    }
+    ::freeifaddrs(ifs);
+    return out;
+}
+
+Fd udp_bind_shared(uint16_t port, std::string* err) {
+    Fd fd = make_v6_socket(SOCK_DGRAM);
+    if (!fd) {
+        if (err) *err = "socket failed";
+        return Fd{};
+    }
+    int on = 1;
+    setsockopt(fd.get(), SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+    sockaddr_in6 sa{};
+    parse_bind_addr("", port, &sa);
+    if (::bind(fd.get(), reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) != 0) {
+        if (err) *err = std::string("bind: ") + std::strerror(errno);
+        return Fd{};
+    }
+    return fd;
+}
+
+bool set_broadcast(int fd) {
+    int on = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) == 0;
+}
+
 std::vector<Endpoint> local_interface_endpoints(uint16_t port) {
     std::vector<Endpoint> out;
     ifaddrs* ifs = nullptr;

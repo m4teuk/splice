@@ -20,6 +20,9 @@ void spl_random_bytes(uint8_t* out, size_t len);
 // Fresh X25519 keypair (clamped private + public), 32 bytes each.
 void spl_wg_keypair(uint8_t out_priv[32], uint8_t out_pub[32]);
 
+// X25519 DH(our private, peer public): identical on both sides of a pairing.
+void spl_x25519(const uint8_t priv_key[32], const uint8_t peer_pub[32], uint8_t out[32]);
+
 // Symmetric SPAKE2. start() returns an opaque state (or null) and writes the
 // outbound message; finish() consumes the state and yields the shared key.
 void* spl_spake2_start(const uint8_t* password, size_t password_len, uint8_t* out_msg,

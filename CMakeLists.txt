@@ -189,6 +189,8 @@ if(SPL_BUILD_TESTS)
     tests/test_netstack.cpp
     tests/test_config.cpp
     tests/test_private_ipc.cpp
+    tests/test_address_hint.cpp
+    tests/test_pathman.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -263,6 +265,11 @@ if(SPL_BUILD_TESTS)
     add_test(NAME peers_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/peers_it.py $<TARGET_FILE:spl>)
     set_tests_properties(peers_integration PROPERTIES TIMEOUT 180)
+
+    # LAN discovery: paired daemons find each other and move data with no server.
+    add_test(NAME lan_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/lan_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(lan_integration PROPERTIES TIMEOUT 120)
 
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration

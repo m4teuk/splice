@@ -177,8 +177,16 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     if (cmd == "chat" || cmd == "ping" || cmd == "revshell" || cmd == "shell" || cmd == "ls")
         return idx == 0 ? peer() : std::vector<std::string>{};
     // `spl peer <sub> …` (the group word is folded away by complete_main).
-    if (cmd == "peer:show" || cmd == "peer:rename" || cmd == "peer:remove" || cmd == "peer:rm")
+    if (cmd == "peer:show" || cmd == "peer:rename" || cmd == "peer:remove" || cmd == "peer:rm" ||
+        cmd == "peer:add-address")
         return idx == 0 ? peer() : std::vector<std::string>{};
+    if (cmd == "peer:remove-address") {  // the peer, then one of its addresses
+        if (idx == 0) return peer();
+        if (idx == 1 && !pos.empty())
+            if (auto store = Store::open(nullptr))
+                if (auto r = store->load(pos[0])) return r->addresses;
+        return {};
+    }
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "register") {
