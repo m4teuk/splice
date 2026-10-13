@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
+#include "common/time.h"
 #include "lwip/init.h"
 #include "lwip/ip6.h"
 #include "lwip/ip6_addr.h"
@@ -53,6 +55,20 @@ ip6_addr_t to_ip6(const proto::Ip6& a) {
     return out;
 }
 
+// How long a connection may hear nothing from its peer before it's declared
+// dead (~3 min; SPL_KEEPALIVE_MS overrides it for tests). lwIP counts from the
+// last segment received, so this covers an idle pipe and a stalled transfer
+// alike: after 2/3 of it in silence we start probing, 6 unanswered probes later
+// the pcb is aborted and the app sees on_error.
+Millis keepalive_total_ms() {
+    static const Millis ms = [] {
+        const char* v = std::getenv("SPL_KEEPALIVE_MS");
+        const long long n = v ? std::atoll(v) : 0;
+        return n > 0 ? static_cast<Millis>(n) : Millis{3 * 60 * 1000};
+    }();
+    return ms;
+}
+
 }  // namespace
 
 // ---- TcpConn ----
@@ -60,6 +76,11 @@ ip6_addr_t to_ip6(const proto::Ip6& a) {
 TcpConn::TcpConn(tcp_pcb* pcb) : pcb_(pcb) {
     tcp_arg(pcb_, this);
     tcp_err(pcb_, tramp_err);
+    const Millis total = keepalive_total_ms();
+    ip_set_option(pcb_, SOF_KEEPALIVE);
+    pcb_->keep_idle = static_cast<u32_t>(total * 2 / 3);
+    pcb_->keep_cnt = 6;
+    pcb_->keep_intvl = static_cast<u32_t>(total / 3 / 6);
 }
 
 TcpConn::~TcpConn() {

@@ -217,6 +217,12 @@ control connection (an `OPEN … FOLLOW`); `-b` detaches and the transfer shows 
   "broke". If an endpoint needs to know it received everything, that knowledge
   must come from its own protocol (see `SHARE_FILE`/`GET_FILE`). Receiving a
   clean close tells you nothing the bytes didn't.
+- **A silent peer is a gone peer.** Every connection runs TCP keepalive: one
+  that hears nothing from the other side for ~3 minutes (no data, no ACKs, no
+  keepalive replies) is closed — so a peer that vanished without closing (lost
+  network, crashed, asleep) doesn't leave a shell or transfer hanging on either
+  end. A healthy idle connection answers the probes and stays up.
+  (`SPL_KEEPALIVE_MS` overrides the window for tests.)
 - **No concurrency limits.** Any number of connections may hit a named pipe;
   each gets its own instance. Where instances share a backing resource the
   behavior is defined by mechanics, not policy: two connections to a

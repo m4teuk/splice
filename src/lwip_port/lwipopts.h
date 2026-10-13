@@ -64,6 +64,10 @@
 // connect attempt give up quickly (default is 6) — the retry loop keeps trying.
 #define TCP_SYNMAXRTX 3
 
+// Per-pcb keepalive timing (keep_idle/keep_intvl/keep_cnt), set in TcpConn so a
+// connection whose peer silently vanished is aborted instead of lingering.
+#define LWIP_TCP_KEEPALIVE 1
+
 #define LWIP_STATS 0
 #define LWIP_DEBUG 0
 
