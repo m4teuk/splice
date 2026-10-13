@@ -259,6 +259,11 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/keepalive_it.py $<TARGET_FILE:spl>)
     set_tests_properties(keepalive_integration PROPERTIES TIMEOUT 90)
 
+    # Peer management against a running daemon: rename/remove/reload apply live.
+    add_test(NAME peers_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/peers_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(peers_integration PROPERTIES TIMEOUT 180)
+
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stress_it.py $<TARGET_FILE:spl>)

@@ -85,7 +85,11 @@ retiring. Without `LIMIT` a registration serves connections indefinitely until
 explicitly removed.
 
 (Plus housekeeping verbs: `PING` -> `OK` (aliveness, used by auto-start),
-`VERSION`, `STOP` (shut the daemon down), `STICKY` (mark a running daemon
+`VERSION`, `STOP` (shut the daemon down), `RELOAD` (re-read the peer files and
+reconcile: a peer is identified by its uid, so a removed one's session and
+connections are dropped at once, a renamed one keeps its session, offers and
+live connections under the new name, and a new one gets a session — `spl pair`
+and `spl peer rename/remove` send it for you; `spl reload` is for hand edits), `STICKY` (mark a running daemon
 no-auto-stop, sent by `spl start`), `LIST <peer>` / `REACH <peer>` (a meta
 round-trip to the peer — the served names, or a reachability ping — backing
 `spl ls <peer>` and `spl ping`), and `FORCE_RELAY <peer> <0|1>`, a debug/test

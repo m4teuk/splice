@@ -59,10 +59,11 @@ void print_usage() {
     std::puts(
         "usage: spl <command> [args]\n"
         "\n"
-        "commands:\n"
-        "  server                              run the rendezvous + relay server\n"
-        "  pair [code]                         pair with another peer\n"
-        "  status                              all peers: path, pipes, transfers\n"
+        "pairing:\n"
+        "  pair [code]                         pair with another device\n"
+        "  peer ls | show | rename | remove    manage paired peers (see: spl peer)\n"
+        "\n"
+        "moving data:\n"
         "  serve <peer> [--name n] <path>      host a file/dir for the peer to fetch\n"
         "  get <peer> <pipe> [-o p] [-b]       fetch a served file/dir\n"
         "  inbox <peer> <dir> [--limit N]      let the peer push files to you\n"
@@ -70,11 +71,17 @@ void print_usage() {
         "  chat <name>                         talk to the peer (a PIPE pair)\n"
         "  revshell <peer> [--name n]          offer a shell on this machine to the peer\n"
         "  shell <peer> [--name n]             open a shell on the peer\n"
+        "  ls <peer>                           what the peer offers you\n"
         "\n"
-        "  status [-v] | ping <peer>           connection state / reachability\n"
-        "  start | stop | reset | config       daemon lifecycle / drop pipes / config\n"
-        "  register | unregister | open | close   raw pipe plumbing\n"
-        "  ls [peer] | rename | remove | add   connections (ls <peer> = what they serve)\n"
+        "seeing what's happening:\n"
+        "  status [-v]                         every peer: link, offers, live connections\n"
+        "  ping <peer>                         is the peer reachable right now?\n"
+        "\n"
+        "daemon and plumbing:\n"
+        "  start | stop | reset | config       daemon lifecycle / drop all offers / config\n"
+        "  reload                              make the daemon re-read the peer files\n"
+        "  register | unregister | open | close   raw pipes (ECHO, SHARE_FILE, GET_FILE, SHELL, PIPE)\n"
+        "  server                              run your own rendezvous + relay server\n"
         "  update                              re-run the installer to get the latest spl\n"
         "\n"
         "  --version   print version\n"
@@ -121,12 +128,19 @@ int main(int argc, char** argv) {
     if (cmd == "revshell") return spl::peer::revshell_main(argc - 1, argv + 1);
     if (cmd == "shell") return spl::peer::shell_main(argc - 1, argv + 1);
     if (cmd == "update") return cmd_update();
+    if (cmd == "peer") return spl::peer::peer_group_main(argc - 1, argv + 1);
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
-    // The daemon / pipe / connection management commands (start, stop, status,
-    // ls, register, open, …) are all handled by peer_cmd_main.
+    // The daemon / pipe plumbing commands (start, stop, status, ls, register,
+    // open, …) are all handled by peer_cmd_main.
     if (spl::peer::is_managed_command(cmd)) return cmd_peer(argc, argv);
 
+    // Managing peers has one home; point there instead of a bare "unknown command".
+    if (cmd == "rename" || cmd == "remove" || cmd == "rm" || cmd == "list") {
+        std::fprintf(stderr, "spl: managing peers is under `spl peer` — try: spl peer %s\n",
+                     cmd == "list" ? "ls" : cmd == "rm" ? "remove" : std::string(cmd).c_str());
+        return 2;
+    }
     std::fprintf(stderr, "spl: unknown command '%.*s'\n",
                  static_cast<int>(cmd.size()), cmd.data());
     print_usage();

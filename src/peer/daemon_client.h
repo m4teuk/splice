@@ -53,4 +53,8 @@ long daemon_reach(const std::string& peer, int timeout_ms);
 // exit_on_stdin_eof is set (chat semantics). Returns an exit code.
 int bridge_stdio(int fd, bool exit_on_stdin_eof = false);
 
+// Tell a running daemon (if any — never starts one) that the peer files changed,
+// so it reloads them now. Called after pairing / renaming / removing a peer.
+void notify_peers_changed();
+
 }  // namespace spl::peer

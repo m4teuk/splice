@@ -219,4 +219,6 @@ int bridge_stdio(int fd, bool exit_on_stdin_eof) {
     }
 }
 
+void notify_peers_changed() { daemon_request("RELOAD"); }
+
 }  // namespace spl::peer

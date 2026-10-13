@@ -194,6 +194,8 @@ class Daemon {
     std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
     void adopt_server();  // pick up a (late) relay resolution and hand it to every session
+    std::string reload();  // reconcile sessions with the peer files; returns a summary
+    void drop_session(const std::string& name);  // end a peer's session and everything on it
 
     // --- control plane ---
     void accept_ctl();
@@ -635,6 +637,81 @@ std::vector<uint64_t> Daemon::unregister(Session& s, const std::string& name) {
     return live;
 }
 
+// End a peer's session: its connections, its (in-memory) offers, its sockets.
+// The store is not touched — whoever removed the peer already dealt with it, and
+// the name may by now belong to a different peer.
+void Daemon::drop_session(const std::string& name) {
+    auto it = sessions_.find(name);
+    if (it == sessions_.end()) return;
+    Session& s = it->second;
+    std::vector<uint64_t> ids;
+    for (const auto& [id, in] : s.insts) ids.push_back(id);
+    for (uint64_t id : ids) close_instance(s, id, false);
+    for (auto& [rname, reg] : s.regs)
+        if (reg.owner_fd >= 0) {
+            poller_.remove(reg.owner_fd);
+            ::close(reg.owner_fd);
+        }
+    s.regs.clear();
+    poller_.remove(s.pm->fd());
+    sessions_.erase(it);
+}
+
+// RELOAD: make the running sessions match the peer files. A peer is identified
+// by its uid, not its name, so: a uid no longer on disk is dropped (removed
+// peers lose access now, not at the next restart), a uid whose file has a new
+// name is renamed in place (connections and offers survive), and a new uid gets
+// a session.
+std::string Daemon::reload() {
+    if (!store_) return "no config store";
+    std::map<proto::Uid, ConnRecord> on_disk;
+    for (auto& r : store_->load_all()) on_disk[r.uid] = r;
+
+    std::vector<std::string> gone, moved;
+    for (const auto& [name, s] : sessions_) {
+        auto it = on_disk.find(s.rec.uid);
+        if (it == on_disk.end())
+            gone.push_back(name);
+        else if (it->second.name != name)
+            moved.push_back(name);
+    }
+    for (const auto& name : gone) {
+        spl::logf("[daemon] reload: peer '%s' was removed; dropping its session", name.c_str());
+        drop_session(name);
+    }
+    // Extract every renamed session before re-inserting any, so swapped names
+    // work. Extraction keeps the Session object in place (callbacks hold it).
+    std::vector<std::map<std::string, Session>::node_type> nodes;
+    for (const auto& name : moved) nodes.push_back(sessions_.extract(name));
+    for (auto& node : nodes) {
+        const ConnRecord& rec = on_disk.at(node.mapped().rec.uid);
+        spl::logf("[daemon] reload: peer '%s' renamed to '%s'", node.key().c_str(),
+                  rec.name.c_str());
+        node.key() = rec.name;
+        node.mapped().name = rec.name;
+        sessions_.insert(std::move(node));
+    }
+    size_t added = 0;
+    for (const auto& [uid, rec] : on_disk) {
+        bool have = false;
+        for (auto& [name, s] : sessions_)
+            if (s.rec.uid == uid) {
+                s.rec = rec;  // pick up any edited fields
+                have = true;
+            }
+        if (have) continue;
+        std::string err;
+        if (start_session(rec, &err)) {
+            spl::logf("[daemon] reload: new peer '%s'", rec.name.c_str());
+            ++added;
+        } else {
+            spl::logf("[daemon] reload: session %s: %s", rec.name.c_str(), err.c_str());
+        }
+    }
+    return std::to_string(sessions_.size()) + " peer(s): " + std::to_string(added) + " added, " +
+           std::to_string(gone.size()) + " removed, " + std::to_string(moved.size()) + " renamed";
+}
+
 void Daemon::adopt_server() {
     {
         std::lock_guard<std::mutex> lk(lookup_->m);
@@ -793,6 +870,8 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         const bool verbose = t.size() > 1 && t[1] == "VERBOSE";
         return reply_close("OK\n" + render_status(mono_ms(), verbose));
     }
+
+    if (cmd == "RELOAD") return reply_close("OK " + reload() + "\n");
 
     if (cmd == "FORCE_RELAY") {  // debug/test: pin a session to the relay (1) or release (0)
         if (t.size() != 3) return reply_close("ERR usage: FORCE_RELAY <peer> <0|1>\n");

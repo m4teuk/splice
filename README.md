@@ -80,7 +80,8 @@ spl chat laptop                    # a terminal on each end of a pipe
 ```sh
 spl status                         # every peer: link (direct/relay), pipes, live transfers
 spl ping laptop                    # is the peer reachable right now?
-spl ls                             # paired peers;  spl ls <peer> = what they serve you
+spl ls laptop                      # what the peer offers you
+spl peer ls                        # your paired peers
 ```
 
 That's the whole day-to-day. Transfers show live progress; add `-b` to a
@@ -100,12 +101,14 @@ spl shell    <peer> [--name n]               open a shell on the peer (feels lik
 
 spl status [-v]                       all peers: path, pipes, progress (-v: addresses, bytes, candidates)
 spl ping  <peer>                      reachability + rough RTT
-spl ls [<peer>]                       list paired peers; with a peer, what they serve you
+spl ls <peer>                         what the peer offers you
 
 spl start | stop                      run the daemon explicitly / shut it down
 spl reset                             drop every registered pipe everywhere
+spl reload                            make the daemon re-read the peer files (after a hand edit)
 spl config                            show the config file path and current values
-spl rename <old> <new> | remove <peer>   manage paired connections
+spl peer ls | show <peer>             list paired peers / everything about one
+spl peer rename <old> <new> | remove <peer>   manage paired peers
 spl update                            re-run the installer to get the latest spl
 
 spl register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, PIPE)

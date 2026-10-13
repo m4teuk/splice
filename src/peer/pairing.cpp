@@ -24,6 +24,7 @@
 #include "net/socket.h"
 #include "net/tls.h"
 #include "peer/daemon.h"
+#include "peer/daemon_client.h"
 #include "peer/store.h"
 #include "proto/frame.h"
 #include "proto/pairing.h"
@@ -324,6 +325,7 @@ int run_pairing(net::TlsConn& conn, bool is_leader, const std::string& spake_cod
             spl::logf("pairing failed: could not save: %s", err.c_str());
             return 1;
         }
+        notify_peers_changed();  // a running daemon picks the new peer up right away
     } else {
         spl::logf("warning: %s; pairing not persisted", err.c_str());
     }

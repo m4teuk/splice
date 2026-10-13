@@ -46,7 +46,7 @@ std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
         cmd == "ping" || cmd == "start")
         return {"--server", "--port"};
-    if (cmd == "pair" || cmd == "add") return {"--name", "--server", "--port"};
+    if (cmd == "pair") return {"--name", "--server", "--port"};
     if (cmd == "server") return {"--bind", "--port", "--cert", "--key"};
     return {};
 }
@@ -57,7 +57,7 @@ std::set<std::string> bool_flags(const std::string& cmd) {
     if (cmd == "open") return {"--wait"};
     if (cmd == "status") return {"-v", "--verbose"};
     if (cmd == "start") return {"--foreground"};
-    if (cmd == "pair" || cmd == "add") return {"--insecure", "-v", "--verbose"};
+    if (cmd == "pair") return {"--insecure", "-v", "--verbose"};
     if (cmd == "server") return {"--setup"};
     return {};
 }
@@ -174,11 +174,11 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     if (cmd == "get") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "send") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};  // peer then path(s)
     if (cmd == "inbox") return idx == 0 ? peer() : (idx == 1 ? std::vector<std::string>{"__DIRS__"} : std::vector<std::string>{});
-    if (cmd == "chat" || cmd == "remove" || cmd == "rm" || cmd == "ping" || cmd == "revshell" ||
-        cmd == "shell")
+    if (cmd == "chat" || cmd == "ping" || cmd == "revshell" || cmd == "shell" || cmd == "ls")
         return idx == 0 ? peer() : std::vector<std::string>{};
-    if (cmd == "rename") return idx == 0 ? peer() : std::vector<std::string>{};
-    if (cmd == "ls" || cmd == "list") return idx == 0 ? peer() : std::vector<std::string>{};
+    // `spl peer <sub> …` (the group word is folded away by complete_main).
+    if (cmd == "peer:show" || cmd == "peer:rename" || cmd == "peer:remove" || cmd == "peer:rm")
+        return idx == 0 ? peer() : std::vector<std::string>{};
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "register") {
@@ -208,6 +208,20 @@ int complete_main(int argc, char** argv) {
     if (cword <= 1) {  // completing the command itself
         emit(command_names());
         return 0;
+    }
+    // `spl peer <sub> …`: complete the subcommand, then fold the group word away
+    // so the rest is handled like any command (named "peer:<sub>").
+    if (words.size() > 1 && words[1] == "peer") {
+        if (cword == 2) {
+            std::vector<std::string> subs;
+            for (const auto& c : kPeerSubcommands)
+                if (!c.alias) subs.emplace_back(c.name);
+            emit(subs);
+            return 0;
+        }
+        words.erase(words.begin() + 1);
+        --cword;
+        if (words.size() > 1) words[1] = "peer:" + words[1];
     }
     const std::string cmd = words.size() > 1 ? words[1] : "";
     const std::string partial = (cword >= 0 && static_cast<size_t>(cword) < words.size())

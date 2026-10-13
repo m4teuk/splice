@@ -33,8 +33,18 @@ def main():
         for c in ("serve", "get", "send", "inbox", "chat", "register", "close", "status",
                   "ping", "config"):
             assert c in cmds, f"missing command {c}: {cmds}"
-        assert "peer" not in cmds, "the 'peer' prefix should be gone"
+        for gone in ("rename", "remove", "add", "list", "rm"):
+            assert gone not in cmds, f"'{gone}' should only exist under `spl peer`: {cmds}"
         print("  commands OK")
+
+        # `spl peer` is the one home for managing paired peers
+        assert "peer" in cmds, cmds
+        assert comp(lenv, 2, "spl", "peer") == ["ls", "show", "rename", "remove"]
+        for sub in ("show", "rename", "remove"):
+            assert "thefollower" in comp(lenv, 3, "spl", "peer", sub), sub
+        assert comp(lenv, 3, "spl", "peer", "ls") == []
+        assert "thefollower" in comp(lenv, 2, "spl", "ls")  # ls <peer> = what they offer
+        print("  peer group completion OK")
 
         # send/inbox/ping complete peer names in slot 0
         for c in ("send", "inbox", "ping"):

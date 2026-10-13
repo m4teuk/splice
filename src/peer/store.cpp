@@ -170,7 +170,11 @@ bool Store::exists(const std::string& name) {
 }
 
 bool Store::remove(const std::string& name) {
-    return std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) == 0;
+    if (std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) != 0) return false;
+    // Its stored offers go with it, so a later peer reusing the name starts clean.
+    for (const auto& p : list_pipes(name)) remove_pipe(name, p.name);
+    ::rmdir((dir_ + "/pipes/" + sanitize(name)).c_str());
+    return true;
 }
 
 // ---- persistent pipe registrations: <dir>/pipes/<peer>/<name> ----
@@ -260,7 +264,12 @@ bool Store::rename(const std::string& from, const std::string& to, std::string* 
     }
     rec->name = to;
     if (!save(*rec, err)) return false;  // writes to_path
-    if (from_path != to_path) std::remove(from_path.c_str());
+    if (from_path != to_path) {
+        std::remove(from_path.c_str());
+        // The peer's stored offers are keyed by its name: move them along.
+        ::rename((dir_ + "/pipes/" + sanitize(from)).c_str(),
+                 (dir_ + "/pipes/" + sanitize(to)).c_str());
+    }
     return true;
 }
 

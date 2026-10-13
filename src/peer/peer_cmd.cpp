@@ -23,10 +23,8 @@ namespace {
 void usage() {
     spl::logf(
         "usage:\n"
-        "  spl ls [peer]                 list paired peers (or what <peer> serves you)\n"
-        "  spl rename <old> <new>        rename a connection\n"
-        "  spl remove <name>             delete a connection\n"
-        "  spl add [pair options]        pair with a new peer (alias for `spl pair`)\n"
+        "  spl ls <peer>                 what <peer> offers you\n"
+        "  spl peer ...                  manage paired peers (see `spl peer`)\n"
         "\n"
         "  spl start [--foreground] [--server H --port N]   run the daemon (stays up)\n"
         "  spl stop                      stop the daemon\n"
@@ -34,6 +32,7 @@ void usage() {
         "  spl ping <peer>               is the peer reachable right now?\n"
         "  spl config                    show config file path + values\n"
         "  spl reset                     drop all registered pipes\n"
+        "  spl reload                    make the daemon re-read the peer files\n"
         "\n"
         "  spl register <peer> <pipe> [LIMIT n] <TYPE> [args…]   host a named pipe\n"
         "  spl unregister <peer> <pipe>\n"
@@ -192,6 +191,46 @@ int do_list_remote(int argc, char** argv, const std::string& peer) {
     return 0;
 }
 
+void peer_usage() {
+    spl::logf(
+        "usage: spl peer <command>\n"
+        "  ls                      list paired peers\n"
+        "  show <name>             everything about one peer\n"
+        "  rename <old> <new>      rename a peer\n"
+        "  remove <name>           forget a peer (unpair)\n"
+        "\n"
+        "pair with a new peer:  spl pair\n"
+        "what a peer offers:    spl ls <peer>");
+}
+
+std::string paired_date(int64_t unix_s) {
+    char date[32] = "?";
+    time_t t = static_cast<time_t>(unix_s);
+    struct tm tm;
+    if (localtime_r(&t, &tm)) std::strftime(date, sizeof(date), "%Y-%m-%d", &tm);
+    return date;
+}
+
+int do_show(const std::string& name) {
+    std::string err;
+    auto store = Store::open(&err);
+    if (!store) {
+        spl::logf("%s", err.c_str());
+        return 1;
+    }
+    auto r = store->load(name);
+    if (!r) {
+        spl::logf("no peer named '%s' (see: spl peer ls)", name.c_str());
+        return 1;
+    }
+    std::printf("%s\n", r->name.c_str());
+    std::printf("  side       %s\n", r->side ? "follower" : "leader");
+    std::printf("  their key  %s\n", base64_encode(as_span(r->peer_pub)).c_str());
+    std::printf("  your key   %s\n", base64_encode(as_span(r->own_pub)).c_str());
+    std::printf("  paired     %s\n", paired_date(r->created_unix).c_str());
+    return 0;
+}
+
 int do_list() {
     std::string err;
     auto store = Store::open(&err);
@@ -201,18 +240,15 @@ int do_list() {
     }
     auto names = store->list();
     if (names.empty()) {
-        std::printf("No paired connections.\n");
+        std::printf("No paired peers. Pair with one: spl pair\n");
         return 0;
     }
     for (const auto& n : names) {
         auto r = store->load(n);
         if (!r) continue;
-        char date[32] = "?";
-        time_t t = static_cast<time_t>(r->created_unix);
-        struct tm tm;
-        if (localtime_r(&t, &tm)) std::strftime(date, sizeof(date), "%Y-%m-%d", &tm);
         std::printf("%-20s  %-8s  %s  (paired %s)\n", n.c_str(), r->side ? "follower" : "leader",
-                    base64_encode(as_span(r->peer_pub)).c_str(), date);
+                    base64_encode(as_span(r->peer_pub)).c_str(),
+                    paired_date(r->created_unix).c_str());
     }
     return 0;
 }
@@ -259,6 +295,7 @@ int do_rename(const std::string& from, const std::string& to) {
         return 1;
     }
     std::printf("renamed '%s' -> '%s'\n", from.c_str(), to.c_str());
+    notify_peers_changed();
     return 0;
 }
 
@@ -270,10 +307,11 @@ int do_remove(const std::string& name) {
         return 1;
     }
     if (!store->remove(name)) {
-        spl::logf("no connection named '%s'", name.c_str());
+        spl::logf("no peer named '%s' (see: spl peer ls)", name.c_str());
         return 1;
     }
     std::printf("removed '%s'\n", name.c_str());
+    notify_peers_changed();  // a running daemon drops the peer's session right away
     return 0;
 }
 
@@ -286,30 +324,33 @@ int peer_cmd_main(int argc, char** argv) {
         return 2;
     }
     std::string sub = argv[1];
-    if (sub == "list" || sub == "ls") {
+    if (sub == "ls") {  // what a peer offers us (paired peers are `spl peer ls`)
         const auto a = plain_args(argc, argv);
-        return a.empty() ? do_list() : do_list_remote(argc, argv, a[0]);
-    }
-    if (sub == "rename") {
-        if (argc < 4) {
-            usage();
+        if (a.size() != 1) {
+            spl::logf("usage: spl ls <peer>     what <peer> offers you\n"
+                      "       spl peer ls       list your paired peers");
             return 2;
         }
-        return do_rename(argv[2], argv[3]);
+        return do_list_remote(argc, argv, a[0]);
     }
-    if (sub == "remove" || sub == "rm") {
-        if (argc < 3) {
-            usage();
-            return 2;
-        }
-        return do_remove(argv[2]);
-    }
-    if (sub == "add") return pair_main(argc - 1, argv + 1);  // argv+1[0] == "add"
 
     if (sub == "start") return do_start(argc, argv);
     if (sub == "stop") return do_stop();
     if (sub == "status") return do_status(has_flag(argc, argv, "-v") || has_flag(argc, argv, "--verbose"));
     if (sub == "reset") return do_verb(argc, argv, "RESET");
+    if (sub == "reload") {  // never starts a daemon: a fresh one reads the files anyway
+        const std::string r = daemon_request("RELOAD");
+        if (r.empty()) {
+            std::printf("daemon not running (it reads the peer files when it starts)\n");
+            return 0;
+        }
+        if (!ok_reply(r)) {
+            daemon_fail("spl reload", r);
+            return 1;
+        }
+        std::printf("reloaded — %s\n", r.size() > 3 ? r.substr(3).c_str() : "ok");
+        return 0;
+    }
     if (sub == "config") return do_config();
     if (sub == "ping") {
         const auto a = plain_args(argc, argv);
@@ -356,6 +397,50 @@ int peer_cmd_main(int argc, char** argv) {
         return do_verb(argc, argv, "CLOSE " + join(a, 0));
     }
     usage();
+    return 2;
+}
+
+// `spl peer <sub> …`: manage paired peers.
+int peer_group_main(int argc, char** argv) {
+    if (argc < 2) {
+        peer_usage();
+        return 2;
+    }
+    const std::string sub = argv[1];
+    if (sub == "-h" || sub == "--help") {
+        peer_usage();
+        return 0;
+    }
+    if (sub == "ls" || sub == "list") {
+        if (argc != 2) {
+            peer_usage();
+            return 2;
+        }
+        return do_list();
+    }
+    if (sub == "show") {
+        if (argc != 3) {
+            peer_usage();
+            return 2;
+        }
+        return do_show(argv[2]);
+    }
+    if (sub == "rename") {
+        if (argc != 4) {
+            peer_usage();
+            return 2;
+        }
+        return do_rename(argv[2], argv[3]);
+    }
+    if (sub == "remove" || sub == "rm") {
+        if (argc != 3) {
+            peer_usage();
+            return 2;
+        }
+        return do_remove(argv[2]);
+    }
+    spl::logf("spl peer: unknown command '%s'", sub.c_str());
+    peer_usage();
     return 2;
 }
 
