@@ -200,13 +200,25 @@ void peer_usage() {
         "  rename <old> <new>      rename a peer\n"
         "  remove <name>           forget a peer (unpair)\n"
         "  add-address <name> <host[:port]>      also look for the peer at this address\n"
-        "  remove-address <name> <host[:port]>   stop looking there\n"
+        "  remove-address <name> <host[:port]>   stop looking there (also forgets a remembered one)\n"
+        "  set <name> <setting> <on|off>         change a setting (all on by default):\n"
+        "        relay             use the relay server for this peer\n"
+        "        lan-discovery     broadcast on local networks to find this peer\n"
+        "        remember-address  save the last addresses that worked and try them first\n"
         "\n"
         "addresses are hints (a LAN IP, a Tailscale name, …): the daemon asks there as\n"
         "well as broadcasting and using the relay, and takes whatever answers first.\n"
         "\n"
         "pair with a new peer:  spl pair\n"
         "what a peer offers:    spl ls <peer>");
+}
+
+// "just now", "5 min ago", "3 h ago", "2 d ago"
+std::string ago(int64_t secs) {
+    if (secs < 60) return "just now";
+    if (secs < 3600) return std::to_string(secs / 60) + " min ago";
+    if (secs < 86400) return std::to_string(secs / 3600) + " h ago";
+    return std::to_string(secs / 86400) + " d ago";
 }
 
 std::string paired_date(int64_t unix_s) {
@@ -230,13 +242,57 @@ int do_show(const std::string& name) {
         return 1;
     }
     std::printf("%s\n", r->name.c_str());
-    std::printf("  side       %s\n", r->side ? "follower" : "leader");
+    std::printf("  your role  %s\n", r->side ? "follower (you entered the code)"
+                                             : "leader (you showed the code)");
     std::printf("  their key  %s\n", base64_encode(as_span(r->peer_pub)).c_str());
     std::printf("  your key   %s\n", base64_encode(as_span(r->own_pub)).c_str());
     std::printf("  paired     %s\n", paired_date(r->created_unix).c_str());
-    for (size_t i = 0; i < r->addresses.size(); ++i)
-        std::printf("  %s  %s  (added)\n", i == 0 ? "addresses" : "         ",
-                    r->addresses[i].c_str());
+    std::printf("  settings   %s\n", settings_summary(*r).c_str());
+    bool first = true;
+    auto row = [&](const std::string& addr, const std::string& note) {
+        std::printf("  %s  %-28s (%s)\n", first ? "addresses" : "         ", addr.c_str(),
+                    note.c_str());
+        first = false;
+    };
+    for (const auto& a : r->addresses) row(a, "added");
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    for (const auto& s : store->load_seen(name)) row(s.addr, "seen " + ago(now - s.when_unix));
+    return 0;
+}
+
+int do_set(const std::string& name, const std::string& setting, const std::string& value) {
+    std::string err;
+    auto store = Store::open(&err);
+    if (!store) {
+        spl::logf("%s", err.c_str());
+        return 1;
+    }
+    auto r = store->load(name);
+    if (!r) {
+        spl::logf("no peer named '%s' (see: spl peer ls)", name.c_str());
+        return 1;
+    }
+    if (value != "on" && value != "off") {
+        spl::logf("a setting is 'on' or 'off', not '%s'", value.c_str());
+        return 2;
+    }
+    const PeerSetting* st = nullptr;
+    for (const auto& s : kPeerSettings)
+        if (setting == s.name) st = &s;
+    if (!st) {
+        spl::logf("no setting '%s' — settings: relay, lan-discovery, remember-address",
+                  setting.c_str());
+        return 2;
+    }
+    (*r).*(st->field) = value == "on";
+    if (!store->save(*r, &err)) {
+        spl::logf("could not save: %s", err.c_str());
+        return 1;
+    }
+    // Turning remembering off also forgets what was remembered.
+    if (!r->remember_address) store->save_seen(name, {});
+    std::printf("%s: %s\n", name.c_str(), settings_summary(*r).c_str());
+    notify_peers_changed();
     return 0;
 }
 
@@ -265,13 +321,26 @@ int do_address(const std::string& name, const std::string& addr, bool add) {
             return 0;
         }
         r->addresses.push_back(addr);
+    } else if (it != r->addresses.end()) {
+        r->addresses.erase(it);
     } else {
-        if (it == r->addresses.end()) {
+        // Not a hint: maybe a remembered address — by its full form or just its host.
+        auto seen = store->load_seen(name);
+        const size_t before = seen.size();
+        std::erase_if(seen, [&](const SeenAddress& s) {
+            std::string host;
+            parse_address_hint(s.addr, &host, nullptr);
+            return s.addr == addr || host == addr;
+        });
+        if (seen.size() == before) {
             spl::logf("'%s' has no address %s (see: spl peer show %s)", name.c_str(), addr.c_str(),
                       name.c_str());
             return 1;
         }
-        r->addresses.erase(it);
+        store->save_seen(name, seen);
+        std::printf("forgot remembered address %s of '%s'\n", addr.c_str(), name.c_str());
+        notify_peers_changed();
+        return 0;
     }
     if (!store->save(*r, &err)) {
         spl::logf("could not save: %s", err.c_str());
@@ -298,13 +367,10 @@ int do_list() {
     for (const auto& n : names) {
         auto r = store->load(n);
         if (!r) continue;
-        std::printf("%-20s  %-8s  %s  (paired %s)", n.c_str(), r->side ? "follower" : "leader",
-                    base64_encode(as_span(r->peer_pub)).c_str(),
-                    paired_date(r->created_unix).c_str());
-        if (!r->addresses.empty())
-            std::printf("  %zu address%s", r->addresses.size(),
-                        r->addresses.size() == 1 ? "" : "es");
-        std::printf("\n");
+        std::printf("%-20s  paired %s", n.c_str(), paired_date(r->created_unix).c_str());
+        const size_t known = r->addresses.size() + store->load_seen(n).size();
+        std::printf("  %s · %zu address%s\n", settings_summary(*r).c_str(), known,
+                    known == 1 ? "" : "es");
     }
     return 0;
 }
@@ -494,6 +560,13 @@ int peer_group_main(int argc, char** argv) {
             return 2;
         }
         return do_remove(argv[2]);
+    }
+    if (sub == "set") {
+        if (argc != 5) {
+            peer_usage();
+            return 2;
+        }
+        return do_set(argv[2], argv[3], argv[4]);
     }
     if (sub == "add-address" || sub == "remove-address") {
         if (argc != 4) {

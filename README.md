@@ -113,6 +113,7 @@ spl peer ls | show <peer>             list paired peers / everything about one
 spl peer rename <old> <new> | remove <peer>   manage paired peers
 spl peer add-address <peer> <host[:port]>     also look for the peer there (LAN IP, Tailscale name…)
 spl peer remove-address <peer> <host[:port]>
+spl peer set <peer> <setting> <on|off>        relay | lan-discovery | remember-address (all on by default)
 spl update                            re-run the installer to get the latest spl
 
 spl register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, PIPE)

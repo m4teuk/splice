@@ -180,11 +180,24 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     if (cmd == "peer:show" || cmd == "peer:rename" || cmd == "peer:remove" || cmd == "peer:rm" ||
         cmd == "peer:add-address")
         return idx == 0 ? peer() : std::vector<std::string>{};
+    if (cmd == "peer:set") {  // the peer, the setting, on|off
+        if (idx == 0) return peer();
+        if (idx == 1) {
+            std::vector<std::string> names;
+            for (const auto& st : kPeerSettings) names.emplace_back(st.name);
+            return names;
+        }
+        return idx == 2 ? std::vector<std::string>{"on", "off"} : std::vector<std::string>{};
+    }
     if (cmd == "peer:remove-address") {  // the peer, then one of its addresses
         if (idx == 0) return peer();
         if (idx == 1 && !pos.empty())
             if (auto store = Store::open(nullptr))
-                if (auto r = store->load(pos[0])) return r->addresses;
+                if (auto r = store->load(pos[0])) {
+                    std::vector<std::string> out = r->addresses;
+                    for (const auto& sa : store->load_seen(pos[0])) out.push_back(sa.addr);
+                    return out;
+                }
         return {};
     }
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});

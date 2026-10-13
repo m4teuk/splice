@@ -6,6 +6,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <ctime>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -200,6 +202,10 @@ struct Session {
     std::map<uint64_t, std::unique_ptr<Instance>> insts;
     uint64_t next_id = 0;
     uint64_t next_reg_serial = 1;  // 0 means "no registration"
+    // Addresses a direct path to this peer last worked at (newest first), kept
+    // in the store when the peer's remember-address setting is on.
+    std::vector<SeenAddress> seen;
+    bool seed_seen = false;  // still to be offered to the path manager as candidates
     Millis last_active = 0;      // last tick this session had a pipe listening/running
     // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
     // end must never be destroyed while one of its own methods is on the stack.
@@ -235,6 +241,8 @@ class Daemon {
     void adopt_server();  // pick up a (late) relay resolution and hand it to every session
     void on_lan_discovery();  // a query arrived on the shared discovery port
     void refresh_hints(Millis now);  // hand each session its resolved address hints
+    void apply_peer_settings(Session& s);  // push the record's settings into the session
+    void remember_paths(Millis now);       // note each session's working direct address
     std::string reload();  // reconcile sessions with the peer files; returns a summary
     void drop_session(const std::string& name);  // end a peer's session and everything on it
 
@@ -260,7 +268,7 @@ class Daemon {
     uint16_t lan_port_ = kLanDiscoPort;
     std::vector<Endpoint> lan_targets_;  // SPL_LAN_TARGETS (tests): replaces broadcasting
     HintResolver hints_;
-    Timer t_hints_;
+    Timer t_hints_, t_remember_;
     std::map<std::string, Session> sessions_;
     std::map<int, std::string> ctl_;  // control conns mid-command: fd -> line buffer
 };
@@ -304,6 +312,7 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
             add_reg(s, r.name, Reg{.type = r.type, .args = r.args, .limit = r.limit,
                                    .persisted = true});
     if (getenv("SPL_FORCE_RELAY")) pm->set_force_relay(true);  // test hook
+    apply_peer_settings(s);
     return true;
 }
 
@@ -746,6 +755,7 @@ std::string Daemon::reload() {
         for (auto& [name, s] : sessions_)
             if (s.rec.uid == uid) {
                 s.rec = rec;  // pick up any edited fields
+                apply_peer_settings(s);
                 have = true;
             }
         if (have) continue;
@@ -784,16 +794,73 @@ void Daemon::on_lan_discovery() {
     }
 }
 
+// The session follows its peer's record: the per-peer settings, and (when
+// remember-address is on) the addresses that worked before.
+void Daemon::apply_peer_settings(Session& s) {
+    s.pm->set_relay_enabled(s.rec.use_relay);
+    s.pm->set_lan_broadcast(s.rec.lan_discovery);
+    s.seen.clear();
+    if (s.rec.remember_address && store_) s.seen = store_->load_seen(s.name);
+    s.seed_seen = !s.seen.empty();
+}
+
+// Where to send LAN queries besides the broadcasts: the user's address hints and
+// the hosts of remembered addresses (the peer's daemon may have restarted on a
+// new port, but it is probably still at that IP). A remembered address is also
+// offered once as an exact candidate, in case the very same socket is still up.
 void Daemon::refresh_hints(Millis now) {
     for (auto& [name, s] : sessions_) {
         std::vector<Endpoint> eps;
+        auto add = [&](const Endpoint& ep) {
+            if (std::find(eps.begin(), eps.end(), ep) == eps.end()) eps.push_back(ep);
+        };
         for (const auto& a : s.rec.addresses) {
             std::string host;
             uint16_t port = 0;
             if (!parse_address_hint(a, &host, &port)) continue;
-            if (auto ep = hints_.get(host, port ? port : lan_port_, now)) eps.push_back(*ep);
+            if (auto ep = hints_.get(host, port ? port : lan_port_, now)) add(*ep);
         }
+        bool all_seeded = true;
+        for (const auto& sa : s.seen) {
+            std::string host;
+            uint16_t port = 0;
+            if (!parse_address_hint(sa.addr, &host, &port)) continue;
+            if (auto ep = hints_.get(host, lan_port_, now)) {
+                add(*ep);
+                if (s.seed_seen && port) {
+                    Endpoint exact = *ep;
+                    exact.port = port;
+                    s.pm->add_candidate(exact, now);
+                }
+            } else {
+                all_seeded = false;
+            }
+        }
+        if (all_seeded) s.seed_seen = false;
         s.pm->set_lan_hints(std::move(eps));
+    }
+}
+
+// Note the direct address each session is using, newest first, so the next
+// start can try it straight away. Rewritten only when it changes (or hourly, to
+// keep its "seen" time meaningful).
+void Daemon::remember_paths(Millis now) {
+    if (!store_) return;
+    constexpr size_t kMaxSeen = 4;
+    const int64_t t = static_cast<int64_t>(std::time(nullptr));
+    for (auto& [name, s] : sessions_) {
+        if (!s.rec.remember_address) continue;
+        const PathStatus ps = s.pm->status(now);
+        for (const auto& c : ps.cands) {
+            if (!c.in_use) continue;
+            const std::string addr = c.ep.to_string();
+            if (!s.seen.empty() && s.seen[0].addr == addr && t - s.seen[0].when_unix < 3600) break;
+            std::erase_if(s.seen, [&](const SeenAddress& x) { return x.addr == addr; });
+            s.seen.insert(s.seen.begin(), SeenAddress{addr, t});
+            if (s.seen.size() > kMaxSeen) s.seen.resize(kMaxSeen);
+            store_->save_seen(name, s.seen);
+            break;
+        }
     }
 }
 
@@ -810,6 +877,7 @@ void Daemon::adopt_server() {
 void Daemon::tick(Millis now) {
     if (!server_.valid()) adopt_server();
     if (t_hints_.due(now, 500)) refresh_hints(now);
+    if (t_remember_.due(now, 2000)) remember_paths(now);
     bool any_busy = false;
     for (auto& [name, s] : sessions_) {
         // Activity gate: full disco only while something is listening or running,
@@ -1201,6 +1269,8 @@ std::string Daemon::render_status(Millis now, bool verbose) {
         }
         o << " | tx " << human_bytes(ps.tx_direct + ps.tx_relay) << " rx "
           << human_bytes(ps.rx_direct + ps.rx_relay) << "\n";
+        o << "  " << settings_summary(s.rec) << " · " << ps.cands.size()
+          << (ps.cands.size() == 1 ? " address known\n" : " addresses known\n");
 
         // --- verbose session detail ---
         if (verbose) {

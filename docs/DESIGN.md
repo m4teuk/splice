@@ -161,6 +161,29 @@ never authoritative: just one more place to ask. One side having the hint is
 enough. (Two daemons on *one* machine can't both receive a unicast query on the
 shared port — hints address a machine, broadcasts reach every daemon on it.)
 
+**Remembered addresses.** With a peer's `remember-address` setting on, the
+daemon notes the direct address in use (newest first, up to four) in
+`<config>/<peer>.seen`. On the next start each is offered as an exact candidate
+(the peer's socket may still be there) and its host becomes one more query
+target (the peer's daemon may have restarted on a new port). Because one side may
+then reach the other at an address the other hasn't learned, a WireGuard reply
+produced for a packet that arrived direct goes back to **that packet's source**
+(as WireGuard itself does), not to whatever path is currently chosen.
+
+**Per-peer settings** (`spl peer set <peer> <setting> on|off`, all on by
+default, stored in the peer's record and applied live through `RELOAD`):
+
+- `relay` — off: nothing is sent to, or accepted from, the relay for this peer;
+  only direct paths can work. It is a local switch, but the relay only forwards
+  when both sides register, so it disables the relay for the pair.
+- `lan-discovery` — off: no broadcasts for this peer (queries still go to its
+  address hints, and we still answer the peer's own queries).
+- `remember-address` — off: nothing is saved or reused, and what was remembered
+  is forgotten.
+
+`spl peer ls`, `spl peer show` and `spl status` all show the settings and how
+many addresses are known for the peer.
+
 Test hooks: `SPL_LAN_PORT` moves the discovery port and
 `SPL_LAN_TARGETS=host:port,…` replaces broadcasting with explicit targets.
 

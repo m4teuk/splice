@@ -25,6 +25,30 @@ struct ConnRecord {
     // — "host", "host:port" or "[v6]:port"; the port defaults to the LAN
     // discovery port. Only ever *extra* places to ask; never authoritative.
     std::vector<std::string> addresses;
+    // Per-peer settings (`spl peer set`). All on by default; a missing line = on.
+    bool use_relay = true;         // register with / send through the relay for this peer
+    bool lan_discovery = true;     // broadcast on local networks to find this peer
+    bool remember_address = true;  // save the last addresses that worked and try them first
+};
+
+// The settings by their CLI names, in display order.
+struct PeerSetting {
+    const char* name;
+    bool ConnRecord::* field;
+};
+inline constexpr PeerSetting kPeerSettings[] = {
+    {"relay", &ConnRecord::use_relay},
+    {"lan-discovery", &ConnRecord::lan_discovery},
+    {"remember-address", &ConnRecord::remember_address},
+};
+// "relay on · lan-discovery on · remember-address on"
+std::string settings_summary(const ConnRecord& r);
+
+// An address a direct path to the peer last worked at ("ip:port" / "[v6]:port"),
+// remembered by the daemon in <config>/<name>.seen — newest first.
+struct SeenAddress {
+    std::string addr;
+    int64_t when_unix = 0;
 };
 
 // Splits an address hint into host and port (0 = unspecified). False if malformed.
@@ -54,6 +78,10 @@ class Store {
     bool exists(const std::string& name);
     bool rename(const std::string& from, const std::string& to, std::string* err);
     bool remove(const std::string& name);  // true if a record was removed
+
+    // Remembered addresses (written by the daemon; the CLI only removes entries).
+    std::vector<SeenAddress> load_seen(const std::string& name);
+    bool save_seen(const std::string& name, const std::vector<SeenAddress>& seen);
 
     // Persistent pipe registrations.
     bool save_pipe(const PipeRecord& r, std::string* err);

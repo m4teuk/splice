@@ -71,6 +71,8 @@ std::optional<ConnRecord> parse_file(const std::string& path) {
         }
         kv[key] = val;
     }
+    for (const auto& st : kPeerSettings)
+        if (auto sit = kv.find(st.name); sit != kv.end()) r.*st.field = sit->second != "off";
     auto it = kv.find("name");
     if (it == kv.end()) return std::nullopt;
     r.name = it->second;
@@ -147,6 +149,7 @@ bool Store::save(const ConnRecord& r, std::string* err) {
       << "peer_pub: " << base64_encode(as_span(r.peer_pub)) << "\n"
       << "created: " << r.created_unix << "\n";
     for (const auto& a : r.addresses) s << "address: " << a << "\n";
+    for (const auto& st : kPeerSettings) s << st.name << ": " << (r.*st.field ? "on" : "off") << "\n";
     const std::string body = s.str();
 
     // Write to a 0600 temp file (the private key is never briefly world-readable),
@@ -210,8 +213,42 @@ bool Store::exists(const std::string& name) {
     return f.good();
 }
 
+std::string settings_summary(const ConnRecord& r) {
+    std::string out;
+    for (const auto& st : kPeerSettings)
+        out += std::string(out.empty() ? "" : " · ") + st.name + (r.*st.field ? " on" : " off");
+    return out;
+}
+
+std::vector<SeenAddress> Store::load_seen(const std::string& name) {
+    std::vector<SeenAddress> out;
+    std::ifstream f(dir_ + "/" + sanitize(name) + ".seen");
+    std::string addr;
+    long long when = 0;
+    while (f >> addr >> when)
+        if (parse_address_hint(addr, nullptr, nullptr)) out.push_back({addr, when});
+    return out;
+}
+
+bool Store::save_seen(const std::string& name, const std::vector<SeenAddress>& seen) {
+    const std::string path = dir_ + "/" + sanitize(name) + ".seen";
+    if (seen.empty()) {
+        std::remove(path.c_str());
+        return true;
+    }
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) return false;
+        for (const auto& s : seen) f << s.addr << " " << s.when_unix << "\n";
+    }
+    ::chmod(tmp.c_str(), 0600);
+    return ::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
 bool Store::remove(const std::string& name) {
     if (std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) != 0) return false;
+    std::remove((dir_ + "/" + sanitize(name) + ".seen").c_str());
     // Its stored offers go with it, so a later peer reusing the name starts clean.
     for (const auto& p : list_pipes(name)) remove_pipe(name, p.name);
     ::rmdir((dir_ + "/pipes/" + sanitize(name)).c_str());
@@ -307,6 +344,8 @@ bool Store::rename(const std::string& from, const std::string& to, std::string* 
     if (!save(*rec, err)) return false;  // writes to_path
     if (from_path != to_path) {
         std::remove(from_path.c_str());
+        ::rename((dir_ + "/" + sanitize(from) + ".seen").c_str(),
+                 (dir_ + "/" + sanitize(to) + ".seen").c_str());
         // The peer's stored offers are keyed by its name: move them along.
         ::rename((dir_ + "/pipes/" + sanitize(from)).c_str(),
                  (dir_ + "/pipes/" + sanitize(to)).c_str());

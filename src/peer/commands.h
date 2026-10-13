@@ -36,6 +36,7 @@ struct PeerSubDef {
 inline constexpr PeerSubDef kPeerSubcommands[] = {
     {"ls", false},          {"show", false},           {"rename", false},
     {"remove", false},      {"add-address", false},    {"remove-address", false},
+    {"set", false},
     {"list", true},         {"rm", true},
 };
 

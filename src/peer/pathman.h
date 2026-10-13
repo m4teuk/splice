@@ -133,6 +133,21 @@ class PathManager {
     // address to use is simply the packet's source — so one verified exchange
     // gives each side the other's direct candidate. Verification only earns a
     // candidate a probe: the usual PING/PONG + WireGuard still decide liveness.
+    // Per-peer settings. Relay off: nothing is sent to or accepted from the relay
+    // for this peer (only direct paths can work). Broadcast off: LAN queries go
+    // to the address hints only. We still *answer* the peer's own queries.
+    void set_relay_enabled(bool on) {
+        if (on && !relay_on_) {
+            t_register_.rearm();
+            t_whereami_.rearm();
+            t_callme_.rearm();
+        }
+        relay_on_ = on;
+    }
+    void set_lan_broadcast(bool on) { lan_broadcast_ = on; }
+    // A direct address worth probing (e.g. one that worked last time).
+    void add_candidate(const Endpoint& ep, Millis now) { add_cand(ep, /*lan=*/true, now); }
+
     // Extra places to send the query (address hints), besides the broadcasts.
     void set_lan_hints(std::vector<Endpoint> hints) {
         if (hints == lan_hints_) return;
@@ -194,6 +209,9 @@ class PathManager {
     bool active_ = false;            // gated by the owner; dormant until set_active(true)
     bool direct_confirmed_ = false;  // derived: some candidate is currently alive
     bool force_relay_ = false;
+    bool relay_on_ = true;       // per-peer setting
+    bool lan_broadcast_ = true;  // per-peer setting
+    bool relay_ok() const { return relay_on_ && cfg_.server.valid(); }
 
     std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 

@@ -191,6 +191,7 @@ if(SPL_BUILD_TESTS)
     tests/test_private_ipc.cpp
     tests/test_address_hint.cpp
     tests/test_pathman.cpp
+    tests/test_peer_settings.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -270,6 +271,12 @@ if(SPL_BUILD_TESTS)
     add_test(NAME lan_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/lan_it.py $<TARGET_FILE:spl>)
     set_tests_properties(lan_integration PROPERTIES TIMEOUT 120)
+
+    # Per-peer settings (relay / lan-discovery / remember-address) change how a
+    # peer is found, live.
+    add_test(NAME settings_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/settings_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(settings_integration PROPERTIES TIMEOUT 180)
 
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration

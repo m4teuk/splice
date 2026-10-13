@@ -168,7 +168,7 @@ void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
 
 void PathManager::send_payload(Path path, const Endpoint* direct_to, ByteSpan payload) {
     if (path == Path::Relay) {
-        if (!cfg_.server.valid()) return;  // relay not known (yet): nothing to send it
+        if (!relay_ok()) return;  // relay unknown (yet) or disabled for this peer
         tx_relay_ += payload.size();
         Bytes pkt = proto::encode_relay_up(cfg_.uid, payload);
         emit_udp(cfg_.server, as_span(pkt));
@@ -202,9 +202,11 @@ void PathManager::send_lan_query() {
     const auto mac = lan_mac(lan_key_, "who", side_, as_span(nonce));
     pkt.insert(pkt.end(), mac.begin(), mac.end());
     // Interfaces come and go (Wi-Fi roaming, a cable, a VPN): look them up each time.
-    const std::vector<Endpoint> targets =
-        cfg_.lan_targets.empty() ? net::broadcast_endpoints(cfg_.lan_port) : cfg_.lan_targets;
-    for (const auto& t : targets) emit_udp(t, as_span(pkt));
+    if (lan_broadcast_) {
+        const std::vector<Endpoint> targets =
+            cfg_.lan_targets.empty() ? net::broadcast_endpoints(cfg_.lan_port) : cfg_.lan_targets;
+        for (const auto& t : targets) emit_udp(t, as_span(pkt));
+    }
     for (const auto& t : lan_hints_) emit_udp(t, as_span(pkt));
     ++lan_queries_;
 }
@@ -234,7 +236,7 @@ void PathManager::answer_lan_query(const Endpoint& src, ByteSpan pkt, Millis now
 }
 
 void PathManager::send_register() {
-    if (!cfg_.server.valid()) return;
+    if (!relay_ok()) return;
     Bytes pkt = proto::encode_relay_up(cfg_.uid, {});  // empty payload = registration
     emit_udp(cfg_.server, as_span(pkt));
 }
@@ -247,7 +249,17 @@ bool PathManager::send_inner(ByteSpan ip_packet) {
 
 void PathManager::pump_wg(WgResult r, Path via, const Endpoint* from, Millis now) {
     while (r.op == WgOp::WriteToNetwork) {
-        send_wg(as_span(r.data));
+        // A reply WireGuard produced for a packet that arrived direct (a handshake
+        // response, typically) goes back to that packet's source — as WireGuard
+        // itself does. Otherwise a peer that reaches us at an address we haven't
+        // learned yet (it remembered ours; we don't know its new one) could never
+        // finish the handshake: our answer would head for the relay instead.
+        if (via == Path::Direct && from && !force_relay_) {
+            Bytes payload = build_inner(CH_WG, as_span(r.data));
+            send_payload(Path::Direct, from, as_span(payload));
+        } else {
+            send_wg(as_span(r.data));
+        }
         r = wg_.decapsulate({});
     }
     if (r.op == WgOp::WriteToTunnel) {
@@ -328,6 +340,7 @@ void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
     if (force_relay_ && !(src == cfg_.server)) return;  // pretend the direct path is gone
     (src == cfg_.server ? rx_relay_ : rx_direct_) += raw.size();
     if (src == cfg_.server) {
+        if (!relay_on_) return;
         auto t = proto::peek_udp_type(raw);
         if (t == proto::UdpType::kWhereami) {
             auto rep = proto::decode_whereami_reply(raw);
@@ -460,7 +473,7 @@ void PathManager::tick(Millis now) {
     if (t_register_.due(now, kRegisterMs)) send_register();
     // whereami: fast until our external address is known, then a slow refresh so
     // a NAT rebind / network change is noticed and re-advertised via CALLME.
-    if (cfg_.server.valid() &&
+    if (relay_ok() &&
         t_whereami_.due(now, external_ ? kWhereamiRefreshMs : kWhereamiMs)) {
         spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_), sizeof(whereami_token_));
         Bytes q = proto::encode_whereami_req(whereami_token_);
@@ -472,7 +485,8 @@ void PathManager::tick(Millis now) {
     }
     // CALLME: every second until a direct path is up, then an occasional refresh
     // (and at once when our addresses change — the timer is re-armed for that).
-    if (external_ && t_callme_.due(now, direct_confirmed_ ? kCallmeDirectMs : kCallmeMs)) {
+    if (relay_ok() && external_ &&
+        t_callme_.due(now, direct_confirmed_ ? kCallmeDirectMs : kCallmeMs)) {
         Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
         send_payload(Path::Relay, nullptr, as_span(inner));
     }
