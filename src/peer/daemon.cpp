@@ -8,13 +8,17 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include "common/base64.h"
@@ -77,6 +81,16 @@ struct ListEnd : LocalEnd {
         buf.append(reinterpret_cast<const char*>(b.data()), b.size());
     }
     std::string describe() const override { return "list"; }
+};
+
+// The relay's address, resolved off the event loop: DNS can block for many
+// seconds when offline, and the daemon must come up (and keep splicing) anyway.
+// A detached thread retries until it succeeds; the loop picks the result up.
+struct ServerLookup {
+    std::mutex m;
+    std::condition_variable cv;
+    std::optional<Endpoint> ep;
+    bool tried = false;  // the first attempt finished (either way)
 };
 
 // One live spliced connection (an instance of a pipe pair).
@@ -179,6 +193,7 @@ class Daemon {
     // Remove a registration (live instances keep running); returns their ids.
     std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
+    void adopt_server();  // pick up a (late) relay resolution and hand it to every session
 
     // --- control plane ---
     void accept_ctl();
@@ -192,7 +207,8 @@ class Daemon {
     bool sticky_ = false;        // never auto-stop (set by `spl start`)
     Millis idle_stop_ms_ = kIdleStopMs;  // SPL_IDLE_STOP_MS overrides (tests)
     Millis last_busy_ = 0;       // last tick any session had a pipe registered/running
-    Endpoint server_{};
+    Endpoint server_{};  // the relay; !valid() until resolved (we run without it meanwhile)
+    std::shared_ptr<ServerLookup> lookup_;
     std::optional<Store> store_;
     net::Poller poller_;
     int lfd_ = -1;  // unix listen socket
@@ -619,7 +635,18 @@ std::vector<uint64_t> Daemon::unregister(Session& s, const std::string& name) {
     return live;
 }
 
+void Daemon::adopt_server() {
+    {
+        std::lock_guard<std::mutex> lk(lookup_->m);
+        if (!lookup_->ep) return;
+        server_ = *lookup_->ep;
+    }
+    spl::logf("[daemon] relay %s resolved (%s)", opts_.server.c_str(), server_.to_string().c_str());
+    for (auto& [name, s] : sessions_) s.pm->set_server(server_);
+}
+
 void Daemon::tick(Millis now) {
+    if (!server_.valid()) adopt_server();
     bool any_busy = false;
     for (auto& [name, s] : sessions_) {
         // Activity gate: full disco only while something is listening or running,
@@ -988,6 +1015,9 @@ std::string ip6_str(const proto::Ip6& a) {
 
 std::string Daemon::render_status(Millis now, bool verbose) {
     std::ostringstream o;
+    if (!server_.valid())
+        o << "RELAY " << opts_.server << ":" << opts_.port
+          << " unresolved (offline?) — retrying; only direct paths work meanwhile\n";
     if (sessions_.empty()) o << "(no peer sessions)\n";
     for (auto& [name, s] : sessions_) {
         PathStatus ps = s.pm->status(now);
@@ -1086,12 +1116,32 @@ int Daemon::run() {
     sticky_ = opts_.sticky;
     if (const char* v = std::getenv("SPL_IDLE_STOP_MS")) idle_stop_ms_ = std::atoll(v);
     store_ = Store::open(nullptr);
-    auto srv = net::resolve(opts_.server, opts_.port);
-    if (!srv) {
-        spl::logf("daemon: cannot resolve %s", opts_.server.c_str());
-        return 1;
+    // Resolve the relay in the background (see ServerLookup). Give it a moment so
+    // the normal online case starts with the relay already known; if it isn't
+    // (offline, DNS down) carry on without — only direct paths work until it is.
+    lookup_ = std::make_shared<ServerLookup>();
+    std::thread([st = lookup_, host = opts_.server, port = opts_.port] {
+        for (;;) {
+            auto ep = net::resolve(host, port);
+            {
+                std::lock_guard<std::mutex> lk(st->m);
+                st->ep = ep;
+                st->tried = true;
+                st->cv.notify_all();
+            }
+            if (ep) return;
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+        }
+    }).detach();
+    {
+        std::unique_lock<std::mutex> lk(lookup_->m);
+        lookup_->cv.wait_for(lk, std::chrono::milliseconds(300),
+                             [this] { return lookup_->tried; });
+        if (lookup_->ep) server_ = *lookup_->ep;
     }
-    server_ = *srv;
+    if (!server_.valid())
+        spl::logf("daemon: cannot resolve relay %s yet; running without it (retrying)",
+                  opts_.server.c_str());
 
     const std::string path = daemon_socket_path();
     ::unlink(path.c_str());

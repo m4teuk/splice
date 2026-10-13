@@ -113,6 +113,7 @@ void PathManager::emit_udp(const Endpoint& ep, ByteSpan data) {
 
 void PathManager::send_payload(Path path, const Endpoint* direct_to, ByteSpan payload) {
     if (path == Path::Relay) {
+        if (!cfg_.server.valid()) return;  // relay not known (yet): nothing to send it
         tx_relay_ += payload.size();
         Bytes pkt = proto::encode_relay_up(cfg_.uid, payload);
         emit_udp(cfg_.server, as_span(pkt));
@@ -132,6 +133,7 @@ void PathManager::send_wg(ByteSpan wg) {
 }
 
 void PathManager::send_register() {
+    if (!cfg_.server.valid()) return;
     Bytes pkt = proto::encode_relay_up(cfg_.uid, {});  // empty payload = registration
     emit_udp(cfg_.server, as_span(pkt));
 }
@@ -310,7 +312,8 @@ void PathManager::tick(Millis now) {
     if (t_register_.due(now, kRegisterMs)) send_register();
     // whereami: fast until our external address is known, then a slow refresh so
     // a NAT rebind / network change is noticed and re-advertised via CALLME.
-    if (t_whereami_.due(now, external_ ? kWhereamiRefreshMs : kWhereamiMs)) {
+    if (cfg_.server.valid() &&
+        t_whereami_.due(now, external_ ? kWhereamiRefreshMs : kWhereamiMs)) {
         spl_random_bytes(reinterpret_cast<uint8_t*>(&whereami_token_), sizeof(whereami_token_));
         Bytes q = proto::encode_whereami_req(whereami_token_);
         emit_udp(cfg_.server, as_span(q));

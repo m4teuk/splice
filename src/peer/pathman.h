@@ -107,6 +107,14 @@ class PathManager {
         active_ = a;
     }
 
+    // The relay's address may be unknown at start (offline, DNS down) and learned
+    // later; until then nothing is sent to it and only direct paths can work.
+    void set_server(const Endpoint& ep) {
+        cfg_.server = ep;
+        t_register_.rearm();
+        t_whereami_.rearm();
+    }
+
     // Pin to the relay and ignore the direct path (used to simulate direct loss).
     void set_force_relay(bool f) { force_relay_ = f; }
 

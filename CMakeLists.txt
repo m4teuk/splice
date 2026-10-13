@@ -114,7 +114,8 @@ add_library(spl_peer STATIC
   src/peer/peer_cmd.cpp
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
-target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip)
+find_package(Threads REQUIRED)  # the daemon resolves the relay on a helper thread
+target_link_libraries(spl_peer PUBLIC spl_crypto spl_net spl_core spl_lwip Threads::Threads)
 # forkpty: in libutil on Linux/BSD; part of libSystem on macOS.
 if(NOT APPLE)
   target_link_libraries(spl_peer PUBLIC util)

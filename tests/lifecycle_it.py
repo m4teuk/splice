@@ -42,6 +42,18 @@ def main():
         ld, fd = pair_two(SPL, port)
         largs = ["--server", "127.0.0.1", "--port", str(port)]
 
+        # --- no relay (offline / DNS down): the daemon still comes up, and says so ---
+        run0 = tempfile.mkdtemp()
+        env0 = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=run0)
+        r = subprocess.run([SPL, "start", "--server", "no-such-relay.invalid", "--port", "443"],
+                           env=env0, capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0, "daemon must start without a resolvable relay:\n" + r.stdout + r.stderr
+        assert running(run0)
+        st = subprocess.run([SPL, "status"], env=env0, capture_output=True, text=True, timeout=30)
+        assert "no-such-relay.invalid:443 unresolved" in st.stdout, st.stdout
+        subprocess.run([SPL, "stop"], env=env0, capture_output=True, timeout=30)
+        print("  daemon starts without a resolvable relay")
+
         # --- auto-started daemon (idle 1.5s) stops on its own ---
         run1 = tempfile.mkdtemp()
         env1 = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=run1, SPL_IDLE_STOP_MS="1500")
