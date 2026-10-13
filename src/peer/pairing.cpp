@@ -4,6 +4,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <functional>
