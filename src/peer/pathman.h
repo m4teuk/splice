@@ -58,14 +58,20 @@ struct PathConfig {
     proto::WgKey own_priv;
     proto::WgKey peer_pub;
     Endpoint server;       // resolved rendezvous/relay server address
-    // LAN discovery: the port queries are broadcast to, and (tests) explicit
-    // targets replacing the per-interface broadcast addresses.
+    // LAN discovery: the port *this peer* listens on (queries are broadcast
+    // there), and (tests) explicit targets replacing the broadcast addresses.
     uint16_t lan_port = 0;
     std::vector<Endpoint> lan_targets;
+    uint16_t own_lan_port = 0;  // where *we* listen: what we tell the peer when it asks
 };
 
-// The well-known UDP port daemons listen on for LAN discovery queries.
-inline constexpr uint16_t kLanDiscoPort = 7701;
+// The default port for LAN discovery (UDP, the daemon) and local pairing (TCP, a
+// `spl pair --local` leader). 7702 is unassigned in the IANA registry and below
+// the ranges systems pick outgoing ports from, so it is rarely taken. A machine
+// can listen elsewhere ([peer] lan_port in the config); each peer record then
+// carries the port that peer uses (told at pairing, or `spl peer set … lan-port`).
+inline constexpr uint16_t kLanDiscoPort = 7702;
+inline constexpr uint16_t kLanPairPort = kLanDiscoPort;
 
 // Read-only snapshot of the path state, for status displays. The path manager
 // never renders or logs; this is its single observation surface.
@@ -90,6 +96,10 @@ class PathManager {
     // Sends the initial relay registration; the owner must start polling fd().
     PathManager(net::Fd udp, PathConfig cfg);
 
+    // Invoked when the peer tells us (authenticated, fresh — see "LAN port" below)
+    // that it listens for LAN discovery on a port other than the one we use for it.
+    std::function<void(uint16_t port)> on_peer_lan_port;
+
     // Invoked for each decrypted inner IP packet, tagged with the path it arrived on.
     std::function<void(ByteSpan inner, Path via)> on_inner;
 
@@ -113,6 +123,7 @@ class PathManager {
             t_callme_.rearm();
             t_ping_.rearm();
             restart_lan_search();
+            restart_port_ask();
         }
         active_ = a;
     }
@@ -145,6 +156,12 @@ class PathManager {
         relay_on_ = on;
     }
     void set_lan_broadcast(bool on) { lan_broadcast_ = on; }
+    void set_lan_port(uint16_t port) {  // the peer's discovery port changed
+        if (port == 0) port = kLanDiscoPort;
+        if (port == cfg_.lan_port) return;
+        cfg_.lan_port = port;
+        restart_lan_search();
+    }
     // A direct address worth probing (e.g. one that worked last time).
     void add_candidate(const Endpoint& ep, Millis now) { add_cand(ep, /*lan=*/true, now); }
 
@@ -191,6 +208,24 @@ class PathManager {
     void prune_cands(Millis now);  // forget addresses that are dead and no longer reported
     void refresh_local_addrs();    // re-read our interfaces; a change restarts the search
     void send_lan_query();
+    // --- the peer's LAN port ---
+    // A peer may move its LAN port after pairing; we'd keep asking the old one.
+    // So each side periodically asks the other, over whatever path works (relay
+    // included), "which port do you listen on?":
+    //   PORTQ | nonce[16] | HMAC(k_pair, "portq" | side | nonce)[:16]
+    //   PORTA | nonce[16] | port[2] | HMAC(k_pair, "porta" | side | nonce | port)[:16]
+    // Freshness comes from *our* nonce, so there are no clocks or counters to go
+    // wrong and a recorded answer can never be replayed to roll the port back:
+    // an answer is accepted only for a nonce we sent within the last 30 s, once,
+    // and only with the pair's MAC. Only the peer can therefore change what we
+    // store, and only to the port it has right now.
+    void send_port_query(Millis now);
+    void send_disco_reply(ByteSpan body, Path via, const Endpoint* from);
+    void restart_port_ask() {  // ask promptly again (activation / the path was lost)
+        port_fresh_ = false;
+        port_tries_ = 0;
+        t_port_.rearm();
+    }
     void restart_lan_search() {  // query promptly again (activation / direct path lost)
         lan_queries_ = 0;
         t_lan_.rearm();
@@ -215,7 +250,15 @@ class PathManager {
 
     std::vector<Endpoint> local_eps_;  // our own interface candidates (advertised in CALLME)
 
-    Timer t_tick_, t_register_, t_whereami_, t_callme_, t_ping_, t_lan_, t_housekeep_;
+    Timer t_tick_, t_register_, t_whereami_, t_callme_, t_ping_, t_lan_, t_housekeep_, t_port_;
+    bool port_fresh_ = false;  // the peer answered since we last (re)started asking
+    int port_tries_ = 0;       // asks sent in the current round (quick, then slow)
+    struct PortAsk {
+        std::array<uint8_t, 16> nonce;
+        Millis at;
+    };
+    std::vector<PortAsk> port_asked_;  // our pending asks (dropped once answered or stale)
+    std::vector<std::array<uint8_t, 16>> port_seen_;   // nonces of asks we answered (anti-replay)
     std::vector<Endpoint> lan_hints_;
     Bytes lan_key_;                 // per-pair discovery key (from the X25519 static DH)
     bool side_ = false;             // our side bit; binds each MAC to its sender's role

@@ -29,6 +29,9 @@ struct ConnRecord {
     bool use_relay = true;         // register with / send through the relay for this peer
     bool lan_discovery = true;     // broadcast on local networks to find this peer
     bool remember_address = true;  // save the last addresses that worked and try them first
+    // The port this peer listens on for LAN discovery; 0 = the default. Told to
+    // us at pairing, or set with `spl peer set <peer> lan-port`.
+    uint16_t lan_port = 0;
 };
 
 // The settings by their CLI names, in display order.
@@ -82,6 +85,12 @@ class Store {
     // Remembered addresses (written by the daemon; the CLI only removes entries).
     std::vector<SeenAddress> load_seen(const std::string& name);
     bool save_seen(const std::string& name, const std::vector<SeenAddress>& seen);
+
+    // The LAN port the peer itself last told the daemon it listens on (0 = it
+    // hasn't). Written by the daemon in <config>/<name>.lanport; it takes
+    // precedence over the record's lan_port, which the CLI owns. save(…, 0) forgets.
+    uint16_t load_learned_port(const std::string& name);
+    bool save_learned_port(const std::string& name, uint16_t port);
 
     // Persistent pipe registrations.
     bool save_pipe(const PipeRecord& r, std::string* err);

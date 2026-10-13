@@ -19,7 +19,7 @@ the relay server.
   byte streams.
 - **Get a shell on a machine you own** — `spl revshell laptop` offers one,
   `spl shell laptop` attaches; it feels like ssh (raw terminal, live resize), with
-  no server and no open port.
+  no ssh server to run or expose.
 - **Resume interrupted transfers** automatically, with per-file checksums, over
   directories of any depth.
 - All of it **end-to-end encrypted** (WireGuard), **without root** (no TUN
@@ -59,6 +59,11 @@ On the second, paste the code and give the first device a name:
 ```sh
 spl pair 3-481922 --name laptop
 ```
+
+No internet, or no wish to involve a relay? `spl pair --local` pairs over the
+local network instead (it also happens by itself when the relay is unreachable):
+the code then starts with `L`, and if the other device isn't on the same network
+(a VPN, Tailscale) the leader prints the `--at <address>` to add.
 
 Each side names the other, then compares public keys before accepting (the
 prompt can verify a pasted key or copy yours to the clipboard). By default both
@@ -143,7 +148,13 @@ section so the client commands don't need `--server`/`--port`:
 [peer]                   # relay for pair / chat / serve / get / the daemon
 addr = splice.kussowski.dev   # defaults to this public relay
 port = 443
+lan_port = 7702          # where this machine listens for local discovery/pairing
 ```
+
+`lan_port` rarely needs touching: 7702 is the default everywhere, the port is
+only open while you have something offered or running, and devices tell each
+other their port — when they pair, and again whenever they connect, so a peer
+that moves it later is followed automatically.
 
 (Running your own relay? `spl server` setup writes a `[server]` section — see
 [docs/DEPLOY.md](docs/DEPLOY.md).) CLI flags override the config. Connection

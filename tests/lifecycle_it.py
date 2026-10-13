@@ -54,6 +54,37 @@ def main():
         subprocess.run([SPL, "stop"], env=env0, capture_output=True, timeout=30)
         print("  daemon starts without a resolvable relay")
 
+        # --- the LAN discovery port is open only while a peer is active ---
+        def port_taken(p):
+            s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            try:
+                s.bind(("::", p))  # no SO_REUSE*: fails iff someone holds the port
+                return False
+            except OSError:
+                return True
+            finally:
+                s.close()
+
+        probe = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        probe.bind(("::", 0))
+        lan = probe.getsockname()[1]
+        probe.close()
+        runp = tempfile.mkdtemp()
+        envp = dict(os.environ, SPL_CONFIG_DIR=fd, SPL_RUNTIME_DIR=runp, SPL_LAN_PORT=str(lan))
+        assert subprocess.run([SPL, "start", *largs], env=envp, capture_output=True).returncode == 0
+        time.sleep(1.0)
+        assert not port_taken(lan), "an idle daemon must not hold the discovery port open"
+        assert subprocess.run([SPL, "register", "theleader", "idleprobe", "ECHO", *largs], env=envp,
+                              capture_output=True).returncode == 0
+        deadline = time.time() + 5
+        while time.time() < deadline and not port_taken(lan):
+            time.sleep(0.1)
+        assert port_taken(lan), "the discovery port should open once a peer is active"
+        subprocess.run([SPL, "unregister", "theleader", "idleprobe", *largs], env=envp,
+                       capture_output=True)
+        subprocess.run([SPL, "stop"], env=envp, capture_output=True)
+        print("  discovery port is closed while idle, open while a peer is active")
+
         # --- auto-started daemon (idle 1.5s) stops on its own ---
         run1 = tempfile.mkdtemp()
         env1 = dict(os.environ, SPL_CONFIG_DIR=ld, SPL_RUNTIME_DIR=run1, SPL_IDLE_STOP_MS="1500")

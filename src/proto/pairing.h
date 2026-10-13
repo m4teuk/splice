@@ -111,6 +111,7 @@ struct Offer {
     uint8_t ula_prefix;  // e.g. 64
     Uid uid;             // low bit = side; leader holds the bit clear, follower set
     WgKey leader_pubkey;
+    uint16_t lan_port = 0;  // where the leader listens for LAN discovery (0 = not told)
 };
 
 // Follower -> leader: accept (with its WG pubkey) or counter/abort.
@@ -119,6 +120,7 @@ struct Reply {
     WgKey follower_pubkey;     // valid iff status == kAccept
     Ip6 counter_ula_base;      // valid iff status == kRejectIp
     uint8_t counter_ula_prefix;
+    uint16_t lan_port = 0;     // where the follower listens for LAN discovery (0 = not told)
 };
 
 using NegMessage = std::variant<Offer, Reply>;

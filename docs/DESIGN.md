@@ -54,6 +54,34 @@ astronomically rare ULA collision, a counter-proposal — retried up to 10×). K
 are HKDF-derived from K with the SPAKE2 transcript as salt. Each peer stores
 `{name, uid, side, ula_base, own_wg_priv, peer_wg_pub}` 0600 under the config dir.
 
+#### Local pairing (no server)
+
+After `PAIRED` the server only passes frames, so the same exchange runs over a
+plain TCP connection between the two devices. `spl pair --local` — and plain
+`spl pair` when the relay can't be reached — makes the leader listen on the LAN
+and print a code of the form **`L<id>-<6 digits>`** (`L37-481922`): `<id>` is a
+random rendezvous id that travels in clear, the digits are the SPAKE2 password
+that never does. (`L`, not `#`: a `#` would start a shell comment and silently
+turn the joining device into a leader.)
+
+```
+follower  --UDP broadcast, discovery port-->  "SPLP" ‖ id[4] ‖ nonce[8]
+leader    --UDP, to the asker-->              "SPLR" ‖ id[4] ‖ nonce[8] ‖ tcp_port[2]
+follower  --TCP-->  leader:   frame JOIN{id}  ->  frame PAIRED | ERR
+          then F1…F6 exactly as above, over the same framing
+```
+
+With `--at <host[:port]>` the follower skips the broadcast and connects straight
+to the leader's TCP port (7702 by default; the leader prints one `--at` line per
+interface address, so this covers Tailscale, a VPN, another subnet). The
+rendezvous is unauthenticated and the channel has no TLS, on purpose: SPAKE2 is
+what authenticates, and the LAN is in exactly the position the (equally
+untrusted) server is in — one guess at the code, and a wrong one aborts at key
+confirmation. A code is joined on one path only: `L…` codes locally, others at
+the relay. Whatever address the pairing found the other device at is saved as an
+address hint on both sides, so they find each other afterwards even where
+broadcast doesn't reach.
+
 ### 2. Usage (UDP, the WireGuard data path)
 
 The daemon keeps one warm session per paired peer — path manager, WireGuard
@@ -116,6 +144,9 @@ is WireGuard, `0x01` is disco. Disco messages:
 - `PING` `0x02 ‖ txid[8]` — sent at each candidate address to punch.
 - `PONG` `0x03 ‖ txid[8]` — reply to a PING; one that echoes our latest token, from
   a candidate we are probing, marks that candidate alive and samples its RTT.
+- `HERE` `0x04`, `PORTQ` `0x05`, `PORTA` `0x06` — LAN discovery's answer and the
+  LAN-port question/answer; each carries a nonce and a per-pair MAC (see "LAN
+  discovery" below).
 
 Each peer adopts **all** of the other's advertised interface addresses as direct
 candidates — no same-NAT gate and no address range is special-cased. A same-LAN
@@ -136,7 +167,7 @@ long as it stays active, **also with a direct path up**:
 
 ```
 query   raw UDP, from the asking session's own socket, to every interface's
-        broadcast address (and every address hint) on port 7701:
+        broadcast address (and every address hint) on the peer's LAN port:
           "SPLQ" ‖ nonce[16] ‖ HMAC(k_pair, "who" ‖ side ‖ nonce)[:16]
 answer  disco, from the answering session's own socket, unicast to the asker:
           HERE 0x04 ‖ nonce[16] ‖ HMAC(k_pair, "here" ‖ side ‖ nonce)[:16]
@@ -183,6 +214,50 @@ default, stored in the peer's record and applied live through `RELOAD`):
 
 `spl peer ls`, `spl peer show` and `spl status` all show the settings and how
 many addresses are known for the peer.
+
+**The LAN port.** Discovery (UDP) and local pairing (TCP) use one port number,
+**7702** by default — unassigned in the IANA registry and below the ranges
+systems pick outgoing ports from, so it is rarely taken. Two different things
+are configurable:
+
+- *where this machine listens*: `[peer] lan_port` in the config file;
+- *where to ask for a given peer*: that peer's `lan-port`, stored in its record.
+  Each side sends its own listening port inside the encrypted pairing
+  negotiation (`Offer`/`Reply` carry it), so it is learned automatically;
+  `spl peer set <peer> lan-port <N|default>` changes it by hand. A local pairing
+  with a leader on a non-default port needs it once up front: the leader prints
+  `--lan-port N` (and ports in its `--at` lines) for the follower to use.
+
+The daemon's discovery socket is **open only while some peer is active**
+(something offered, a connection running, or the warm window after) — an idle
+daemon holds no port. It answers a query only when the query's MAC verifies
+under that specific pairing's key; anything else gets no reply at all.
+
+**Following a peer that moves its port.** A peer can change `lan_port` after
+pairing; the other side would keep asking the old one. So each active session
+asks its peer, over whatever path works (the relay included):
+
+```
+PORTQ 0x05 ‖ nonce[16] ‖ HMAC(k_pair, "portq" ‖ side ‖ nonce)[:16]
+PORTA 0x06 ‖ nonce[16] ‖ port[2] ‖ HMAC(k_pair, "porta" ‖ side ‖ nonce ‖ port)[:16]
+```
+
+It asks every 5 s until answered (six tries — an older peer never answers), then
+every 5 minutes, and again at once whenever the direct path is lost or moves to
+a different address (the peer's socket changing is what a restart of its daemon
+looks like, and a restart is the only time its port can change). An answer is
+accepted only for a nonce we sent in the last 30 s, only once, and only with the
+pair's MAC over that nonce and the port — so only the peer can change what we
+store, only to the port it has *now*, and a recorded or delayed answer can't
+roll it back. Freshness comes from the asker's nonce, so no clocks or counters
+are involved. A query is answered only if it carries the pair's MAC, each nonce
+once, and only by an active session.
+
+The learned port is kept by the daemon in `<config>/<peer>.lanport`, separate
+from the peer's record (which only the CLI writes, so the two never overwrite
+each other's changes), and takes precedence over the record's value.
+`spl peer show` marks it "(told by the peer)"; setting the port by hand clears
+it, until the peer says otherwise again.
 
 Test hooks: `SPL_LAN_PORT` moves the discovery port and
 `SPL_LAN_TARGETS=host:port,…` replaces broadcasting with explicit targets.

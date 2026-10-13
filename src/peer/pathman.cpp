@@ -24,6 +24,13 @@ constexpr uint8_t DISCO_CALLME = 0x01;
 constexpr uint8_t DISCO_PING = 0x02;
 constexpr uint8_t DISCO_PONG = 0x03;
 constexpr uint8_t DISCO_HERE = 0x04;  // answer to a LAN discovery query: [nonce:16][mac:16]
+constexpr uint8_t DISCO_PORTQ = 0x05;  // "which LAN port do you listen on?" [nonce:16][mac:16]
+constexpr uint8_t DISCO_PORTA = 0x06;  // the answer: [nonce:16][port:2][mac:16]
+
+constexpr Millis kPortAskFastMs = 5000;        // until the peer answers…
+constexpr int kPortAskFastTries = 6;           // …for this many asks (an old peer never will),
+constexpr Millis kPortAskSlowMs = 5 * 60000;   // then (and once answered) every 5 minutes
+constexpr Millis kPortAnswerMs = 30000;        // an answer older than this is not fresh
 
 // LAN discovery query, broadcast raw (no channel byte) to the discovery port:
 //   "SPLQ" | nonce[16] | HMAC(k_pair, "who" | sender_side | nonce)[:16]
@@ -64,11 +71,14 @@ void send_to(int fd, const Endpoint& ep, ByteSpan d) {
     ::sendto(fd, d.data(), d.size(), 0, reinterpret_cast<sockaddr*>(&ss), len);
 }
 
+// MAC over label | sender_side | data. The four labels in use ("who", "here",
+// "portq", "porta") give inputs of four different lengths with fixed-size data,
+// so one message type can never be passed off as another.
 std::array<uint8_t, kLanMac> lan_mac(const Bytes& key, const char* label, bool sender_side,
-                                     ByteSpan nonce) {
+                                     ByteSpan data) {
     Bytes m(label, label + std::strlen(label));
     m.push_back(sender_side ? 1 : 0);
-    m.insert(m.end(), nonce.begin(), nonce.end());
+    m.insert(m.end(), data.begin(), data.end());
     const auto full = crypto::hmac_sha256(as_span(key), as_span(m));
     std::array<uint8_t, kLanMac> out{};
     std::memcpy(out.data(), full.data(), kLanMac);
@@ -235,6 +245,31 @@ void PathManager::answer_lan_query(const Endpoint& src, ByteSpan pkt, Millis now
     t_ping_.rearm();  // probe the new candidate right away
 }
 
+// ---- the peer's LAN port ----
+
+void PathManager::send_port_query(Millis now) {
+    std::array<uint8_t, kLanNonce> nonce{};
+    spl_random_bytes(nonce.data(), nonce.size());
+    std::erase_if(port_asked_, [&](const PortAsk& a) { return now - a.at > kPortAnswerMs; });
+    port_asked_.push_back({nonce, now});
+    ByteWriter w;
+    w.u8(DISCO_PORTQ);
+    w.array(nonce);
+    w.array(lan_mac(lan_key_, "portq", side_, as_span(nonce)));
+    // Over whatever currently works: the direct path if there is one, else the relay.
+    send_disco_reply(as_span(w.take()), tx_path_, chosen_ ? &*chosen_ : nullptr);
+    ++port_tries_;
+}
+
+// Send a disco message back the way one came (or out the given way).
+void PathManager::send_disco_reply(ByteSpan body, Path via, const Endpoint* from) {
+    Bytes inner = build_inner(CH_DISCO, body);
+    if (via == Path::Direct && from && !force_relay_)
+        send_payload(Path::Direct, from, as_span(inner));
+    else
+        send_payload(Path::Relay, nullptr, as_span(inner));
+}
+
 void PathManager::send_register() {
     if (!relay_ok()) return;
     Bytes pkt = proto::encode_relay_up(cfg_.uid, {});  // empty payload = registration
@@ -305,6 +340,45 @@ void PathManager::handle_disco(ByteSpan body, Path via, const Endpoint* from, Mi
         if (CRYPTO_memcmp(want.data(), mac.data(), kLanMac) != 0) return;
         add_cand(*from, /*lan=*/true, now);
         t_ping_.rearm();
+    } else if (dt == DISCO_PORTQ) {
+        // The peer asks which LAN port we listen on. Answer only a query carrying
+        // the pair's MAC (made by the *other* side), and each nonce only once.
+        const auto nonce = r.array<kLanNonce>();
+        const auto mac = r.array<kLanMac>();
+        // (A dormant session says nothing, as with LAN queries.)
+        if (!r.done() || cfg_.own_lan_port == 0 || !active_) return;
+        const auto want = lan_mac(lan_key_, "portq", !side_, as_span(nonce));
+        if (CRYPTO_memcmp(want.data(), mac.data(), kLanMac) != 0) return;
+        if (std::find(port_seen_.begin(), port_seen_.end(), nonce) != port_seen_.end()) return;
+        remember(port_seen_, nonce);
+        Bytes signed_part(nonce.begin(), nonce.end());
+        signed_part.push_back(static_cast<uint8_t>(cfg_.own_lan_port >> 8));
+        signed_part.push_back(static_cast<uint8_t>(cfg_.own_lan_port));
+        ByteWriter w;
+        w.u8(DISCO_PORTA);
+        w.array(nonce);
+        w.u16(cfg_.own_lan_port);
+        w.array(lan_mac(lan_key_, "porta", side_, as_span(signed_part)));
+        send_disco_reply(as_span(w.take()), via, from);
+    } else if (dt == DISCO_PORTA) {
+        // The peer's answer. Accept it only for a nonce we asked with (so it is
+        // fresh — a recorded answer can't roll the port back), with the pair's MAC
+        // over that nonce and the port (so only the peer can have produced it).
+        const auto nonce = r.array<kLanNonce>();
+        const uint16_t port = r.u16();
+        const auto mac = r.array<kLanMac>();
+        if (!r.done() || port == 0) return;
+        const auto asked = std::find_if(port_asked_.begin(), port_asked_.end(),
+                                        [&](const PortAsk& a) { return a.nonce == nonce; });
+        if (asked == port_asked_.end() || now - asked->at > kPortAnswerMs) return;
+        Bytes signed_part(nonce.begin(), nonce.end());
+        signed_part.push_back(static_cast<uint8_t>(port >> 8));
+        signed_part.push_back(static_cast<uint8_t>(port));
+        const auto want = lan_mac(lan_key_, "porta", !side_, as_span(signed_part));
+        if (CRYPTO_memcmp(want.data(), mac.data(), kLanMac) != 0) return;
+        port_asked_.erase(asked);  // one answer per ask (only now: a forgery must not burn it)
+        port_fresh_ = true;
+        if (port != cfg_.lan_port && on_peer_lan_port) on_peer_lan_port(port);
     } else if (dt == DISCO_PING) {
         const uint64_t tx = r.u64();
         if (!r.ok() || !from) return;
@@ -361,8 +435,18 @@ void PathManager::process(const Endpoint& src, ByteSpan raw, Millis now) {
 
 void PathManager::update_tx_path(Millis now) {
     const bool was_direct = direct_confirmed_;
+    const std::optional<Endpoint> was_chosen = chosen_;
     choose_direct(now);
-    if (was_direct && !direct_confirmed_) restart_lan_search();  // lost it: look again now
+    if (was_direct && !direct_confirmed_) {  // lost it: look again now…
+        restart_lan_search();
+        restart_port_ask();  // …and the peer may have restarted on another LAN port
+    } else if (direct_confirmed_ && chosen_ != was_chosen) {
+        // A direct path came up, or moved to another address. The peer's socket
+        // changing is what a restart of its daemon looks like (a quick one never
+        // shows as a lost path), and a restart is when its LAN port can change:
+        // ask again, over the path that just proved itself.
+        restart_port_ask();
+    }
     tx_path_ = (!force_relay_ && direct_confirmed_) ? Path::Direct : Path::Relay;
 }
 
@@ -490,6 +574,10 @@ void PathManager::tick(Millis now) {
         Bytes inner = build_inner(CH_DISCO, as_span(build_callme(*external_, local_eps_)));
         send_payload(Path::Relay, nullptr, as_span(inner));
     }
+    // Ask the peer which LAN port it listens on: promptly until it answers, then
+    // just occasionally (it can only change when the peer's daemon restarts).
+    const bool port_fast = !port_fresh_ && port_tries_ < kPortAskFastTries;
+    if (t_port_.due(now, port_fast ? kPortAskFastMs : kPortAskSlowMs)) send_port_query(now);
     // LAN discovery: a few quick queries when a search starts, then an occasional
     // one for as long as the session is active — with a direct path up too, since
     // a better one may have appeared.

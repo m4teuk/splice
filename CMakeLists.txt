@@ -278,6 +278,12 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/settings_it.py $<TARGET_FILE:spl>)
     set_tests_properties(settings_integration PROPERTIES TIMEOUT 180)
 
+    # Local pairing: no server at any point — pair over the LAN (by discovery and
+    # with --at), then connect and move data.
+    add_test(NAME pair_local_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/pair_local_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(pair_local_integration PROPERTIES TIMEOUT 120)
+
     # Stress: a large file, many pipes, and a transfer over a lossy path.
     add_test(NAME stress_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/stress_it.py $<TARGET_FILE:spl>)

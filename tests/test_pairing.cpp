@@ -81,6 +81,37 @@ TEST(Pairing, NegRoundTrip) {
     EXPECT_EQ(encode_neg(*decode_neg(as_span(encode(r)))), encode(r));
 }
 
+TEST(Pairing, NegCarriesLanPort) {
+    Offer o{};
+    o.lan_port = 9001;
+    auto mo = decode_neg(as_span(encode(o)));
+    ASSERT_TRUE(mo && std::holds_alternative<Offer>(*mo));
+    EXPECT_EQ(std::get<Offer>(*mo).lan_port, 9001);
+
+    Reply r{};
+    r.status = ReplyStatus::kAccept;
+    r.lan_port = 9002;
+    auto mr = decode_neg(as_span(encode(r)));
+    ASSERT_TRUE(mr && std::holds_alternative<Reply>(*mr));
+    EXPECT_EQ(std::get<Reply>(*mr).lan_port, 9002);
+}
+
+TEST(Pairing, NegAcceptsOlderEncodingWithoutLanPort) {
+    Bytes old_offer = encode(Offer{});
+    old_offer.resize(old_offer.size() - 2);  // what a peer from before the field sends
+    auto mo = decode_neg(as_span(old_offer));
+    ASSERT_TRUE(mo && std::holds_alternative<Offer>(*mo));
+    EXPECT_EQ(std::get<Offer>(*mo).lan_port, 0);
+
+    Bytes old_reply = encode(Reply{});
+    old_reply.resize(old_reply.size() - 2);
+    ASSERT_TRUE(decode_neg(as_span(old_reply)).has_value());
+
+    Bytes odd = encode(Offer{});
+    odd.resize(odd.size() - 1);  // neither form: rejected
+    EXPECT_FALSE(decode_neg(as_span(odd)).has_value());
+}
+
 TEST(Pairing, NegFields) {
     Offer o{};
     o.uid.fill(0xAA);

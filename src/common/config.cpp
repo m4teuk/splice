@@ -89,6 +89,8 @@ Config load_config() {
                 c.peer.addr = val;
             else if (key == "port")
                 c.peer.port = static_cast<uint16_t>(std::atoi(val.c_str()));
+            else if (key == "lan_port")
+                c.lan_port = static_cast<uint16_t>(std::atoi(val.c_str()));
         }
     }
     return c;

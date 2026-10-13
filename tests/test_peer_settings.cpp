@@ -38,6 +38,34 @@ TEST(PeerSettings, DefaultOnAndRoundTrip) {
     EXPECT_EQ(settings_summary(*got), "relay off \u00b7 lan-discovery on \u00b7 remember-address on");
 }
 
+TEST(PeerSettings, LanPortIsStoredOnlyWhenNotDefault) {
+    Store st = temp_store();
+    ConnRecord r = rec("laptop");
+    ASSERT_TRUE(st.save(r, nullptr));
+    EXPECT_EQ(st.load("laptop")->lan_port, 0);
+    EXPECT_EQ(settings_summary(*st.load("laptop")).find("lan-port"), std::string::npos);
+    r.lan_port = 9000;
+    ASSERT_TRUE(st.save(r, nullptr));
+    EXPECT_EQ(st.load("laptop")->lan_port, 9000);
+    EXPECT_NE(settings_summary(*st.load("laptop")).find("lan-port 9000"), std::string::npos);
+}
+
+TEST(PeerSettings, LearnedPortFollowsRenameAndRemove) {
+    Store st = temp_store();
+    ASSERT_TRUE(st.save(rec("a"), nullptr));
+    EXPECT_EQ(st.load_learned_port("a"), 0);
+    ASSERT_TRUE(st.save_learned_port("a", 9100));
+    EXPECT_EQ(st.load_learned_port("a"), 9100);
+    ASSERT_TRUE(st.rename("a", "b", nullptr));
+    EXPECT_EQ(st.load_learned_port("a"), 0);
+    EXPECT_EQ(st.load_learned_port("b"), 9100);
+    ASSERT_TRUE(st.save_learned_port("b", 0));  // 0 = forget
+    EXPECT_EQ(st.load_learned_port("b"), 0);
+    ASSERT_TRUE(st.save_learned_port("b", 9200));
+    ASSERT_TRUE(st.remove("b"));
+    EXPECT_EQ(st.load_learned_port("b"), 0) << "a later peer reusing the name must start clean";
+}
+
 TEST(PeerSettings, RememberedAddressesFollowRenameAndRemove) {
     Store st = temp_store();
     ASSERT_TRUE(st.save(rec("a"), nullptr));

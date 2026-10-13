@@ -9,6 +9,7 @@
 //   [peer]
 //   addr = splice.kussowski.dev
 //   port = 443
+//   lan_port = 7702      (where this machine listens for LAN discovery / local pairing)
 #pragma once
 
 #include <cstdint>
@@ -36,6 +37,7 @@ struct ServerConfig {
 struct Config {
     ServerConfig server;  // [server]: relay server settings
     HostPort peer;        // [peer]: default rendezvous/relay server for peer commands
+    uint16_t lan_port = 0;  // [peer] lan_port: our LAN discovery / local pairing port (0 = default)
 };
 
 // Loads the config file; a missing file yields an all-unset Config.

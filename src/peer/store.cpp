@@ -73,6 +73,10 @@ std::optional<ConnRecord> parse_file(const std::string& path) {
     }
     for (const auto& st : kPeerSettings)
         if (auto sit = kv.find(st.name); sit != kv.end()) r.*st.field = sit->second != "off";
+    if (auto pit = kv.find("lan-port"); pit != kv.end()) {
+        const int n = std::atoi(pit->second.c_str());
+        if (n > 0 && n < 65536) r.lan_port = static_cast<uint16_t>(n);
+    }
     auto it = kv.find("name");
     if (it == kv.end()) return std::nullopt;
     r.name = it->second;
@@ -150,6 +154,7 @@ bool Store::save(const ConnRecord& r, std::string* err) {
       << "created: " << r.created_unix << "\n";
     for (const auto& a : r.addresses) s << "address: " << a << "\n";
     for (const auto& st : kPeerSettings) s << st.name << ": " << (r.*st.field ? "on" : "off") << "\n";
+    if (r.lan_port) s << "lan-port: " << r.lan_port << "\n";
     const std::string body = s.str();
 
     // Write to a 0600 temp file (the private key is never briefly world-readable),
@@ -217,6 +222,7 @@ std::string settings_summary(const ConnRecord& r) {
     std::string out;
     for (const auto& st : kPeerSettings)
         out += std::string(out.empty() ? "" : " · ") + st.name + (r.*st.field ? " on" : " off");
+    if (r.lan_port) out += " · lan-port " + std::to_string(r.lan_port);  // only when not the default
     return out;
 }
 
@@ -246,9 +252,34 @@ bool Store::save_seen(const std::string& name, const std::vector<SeenAddress>& s
     return ::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
+uint16_t Store::load_learned_port(const std::string& name) {
+    std::ifstream f(dir_ + "/" + sanitize(name) + ".lanport");
+    long n = 0;
+    if (!(f >> n) || n < 1 || n > 65535) return 0;
+    return static_cast<uint16_t>(n);
+}
+
+bool Store::save_learned_port(const std::string& name, uint16_t port) {
+    const std::string path = dir_ + "/" + sanitize(name) + ".lanport";
+    if (port == 0) {
+        std::remove(path.c_str());
+        return true;
+    }
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f) return false;
+        f << port << "\n";
+        if (!f.flush()) return false;
+    }
+    ::chmod(tmp.c_str(), 0600);
+    return ::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
 bool Store::remove(const std::string& name) {
     if (std::remove((dir_ + "/" + sanitize(name) + ".conn").c_str()) != 0) return false;
     std::remove((dir_ + "/" + sanitize(name) + ".seen").c_str());
+    std::remove((dir_ + "/" + sanitize(name) + ".lanport").c_str());
     // Its stored offers go with it, so a later peer reusing the name starts clean.
     for (const auto& p : list_pipes(name)) remove_pipe(name, p.name);
     ::rmdir((dir_ + "/pipes/" + sanitize(name)).c_str());
@@ -346,6 +377,8 @@ bool Store::rename(const std::string& from, const std::string& to, std::string* 
         std::remove(from_path.c_str());
         ::rename((dir_ + "/" + sanitize(from) + ".seen").c_str(),
                  (dir_ + "/" + sanitize(to) + ".seen").c_str());
+        ::rename((dir_ + "/" + sanitize(from) + ".lanport").c_str(),
+                 (dir_ + "/" + sanitize(to) + ".lanport").c_str());
         // The peer's stored offers are keyed by its name: move them along.
         ::rename((dir_ + "/pipes/" + sanitize(from)).c_str(),
                  (dir_ + "/pipes/" + sanitize(to)).c_str());

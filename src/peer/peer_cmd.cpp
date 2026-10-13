@@ -15,6 +15,7 @@
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
 #include "peer/pairing.h"
+#include "peer/pathman.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -205,6 +206,8 @@ void peer_usage() {
         "        relay             use the relay server for this peer\n"
         "        lan-discovery     broadcast on local networks to find this peer\n"
         "        remember-address  save the last addresses that worked and try them first\n"
+        "  set <name> lan-port <N|default>       the port that peer listens on for LAN discovery\n"
+        "                                        (learned at pairing; only set it if they changed it)\n"
         "\n"
         "addresses are hints (a LAN IP, a Tailscale name, …): the daemon asks there as\n"
         "well as broadcasting and using the relay, and takes whatever answers first.\n"
@@ -247,7 +250,12 @@ int do_show(const std::string& name) {
     std::printf("  their key  %s\n", base64_encode(as_span(r->peer_pub)).c_str());
     std::printf("  your key   %s\n", base64_encode(as_span(r->own_pub)).c_str());
     std::printf("  paired     %s\n", paired_date(r->created_unix).c_str());
+    const uint16_t told = store->load_learned_port(name);
+    const uint16_t lan = told ? told : r->lan_port ? r->lan_port : kLanDiscoPort;
+    r->lan_port = lan == kLanDiscoPort ? 0 : lan;  // show what's in effect
     std::printf("  settings   %s\n", settings_summary(*r).c_str());
+    std::printf("  lan port   %u%s\n", lan,
+                told ? " (told by the peer)" : lan == kLanDiscoPort ? " (default)" : "");
     bool first = true;
     auto row = [&](const std::string& addr, const std::string& note) {
         std::printf("  %s  %-28s (%s)\n", first ? "addresses" : "         ", addr.c_str(),
@@ -272,19 +280,31 @@ int do_set(const std::string& name, const std::string& setting, const std::strin
         spl::logf("no peer named '%s' (see: spl peer ls)", name.c_str());
         return 1;
     }
-    if (value != "on" && value != "off") {
-        spl::logf("a setting is 'on' or 'off', not '%s'", value.c_str());
-        return 2;
+    if (setting == "lan-port") {
+        const int n = value == "default" ? kLanDiscoPort : std::atoi(value.c_str());
+        if (n < 1 || n > 65535) {
+            spl::logf("lan-port is a port number (1-65535) or 'default', not '%s'", value.c_str());
+            return 2;
+        }
+        r->lan_port = n == kLanDiscoPort ? 0 : static_cast<uint16_t>(n);
+        // A hand-set value replaces whatever the peer told the daemon before
+        // (if the peer says otherwise again later, its word wins again).
+        store->save_learned_port(name, 0);
+    } else {
+        if (value != "on" && value != "off") {
+            spl::logf("a setting is 'on' or 'off', not '%s'", value.c_str());
+            return 2;
+        }
+        const PeerSetting* st = nullptr;
+        for (const auto& s : kPeerSettings)
+            if (setting == s.name) st = &s;
+        if (!st) {
+            spl::logf("no setting '%s' — settings: relay, lan-discovery, remember-address, lan-port",
+                      setting.c_str());
+            return 2;
+        }
+        (*r).*(st->field) = value == "on";
     }
-    const PeerSetting* st = nullptr;
-    for (const auto& s : kPeerSettings)
-        if (setting == s.name) st = &s;
-    if (!st) {
-        spl::logf("no setting '%s' — settings: relay, lan-discovery, remember-address",
-                  setting.c_str());
-        return 2;
-    }
-    (*r).*(st->field) = value == "on";
     if (!store->save(*r, &err)) {
         spl::logf("could not save: %s", err.c_str());
         return 1;
@@ -368,6 +388,8 @@ int do_list() {
         auto r = store->load(n);
         if (!r) continue;
         std::printf("%-20s  paired %s", n.c_str(), paired_date(r->created_unix).c_str());
+        if (const uint16_t told = store->load_learned_port(n))  // show what's in effect
+            r->lan_port = told == kLanDiscoPort ? 0 : told;
         const size_t known = r->addresses.size() + store->load_seen(n).size();
         std::printf("  %s · %zu address%s\n", settings_summary(*r).c_str(), known,
                     known == 1 ? "" : "es");
@@ -399,6 +421,8 @@ int do_config() {
     std::printf("[peer]   addr = %s   port = %u   (relay for pair/serve/get/chat/…)\n",
                 c.peer.addr.empty() ? "(default: splice.kussowski.dev)" : c.peer.addr.c_str(),
                 c.peer.port ? c.peer.port : 443);
+    std::printf("         lan_port = %u%s   (LAN discovery + local pairing listen here)\n",
+                c.lan_port ? c.lan_port : kLanDiscoPort, c.lan_port ? "" : " (default)");
     std::printf("[server] addr = %s   port = %u   (only when running `spl server`)\n",
                 c.server.addr.empty() ? "(unset)" : c.server.addr.c_str(), c.server.port);
     std::printf("edit the file by hand to change these; CLI flags override per-command.\n");

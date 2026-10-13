@@ -42,7 +42,7 @@ def main():
         assert comp(lenv, 2, "spl", "peer") == ["ls", "show", "rename", "remove", "add-address",
                                                  "remove-address", "set"]
         assert comp(lenv, 4, "spl", "peer", "set", "thefollower") == [
-            "relay", "lan-discovery", "remember-address"]
+            "relay", "lan-discovery", "remember-address", "lan-port"]
         assert comp(lenv, 5, "spl", "peer", "set", "thefollower", "relay") == ["on", "off"]
         for sub in ("show", "rename", "remove", "add-address", "remove-address"):
             assert "thefollower" in comp(lenv, 3, "spl", "peer", sub), sub

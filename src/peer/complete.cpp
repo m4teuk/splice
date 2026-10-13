@@ -46,7 +46,7 @@ std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
         cmd == "ping" || cmd == "start")
         return {"--server", "--port"};
-    if (cmd == "pair") return {"--name", "--server", "--port"};
+    if (cmd == "pair") return {"--name", "--server", "--port", "--at", "--lan-port"};
     if (cmd == "server") return {"--bind", "--port", "--cert", "--key"};
     return {};
 }
@@ -57,7 +57,7 @@ std::set<std::string> bool_flags(const std::string& cmd) {
     if (cmd == "open") return {"--wait"};
     if (cmd == "status") return {"-v", "--verbose"};
     if (cmd == "start") return {"--foreground"};
-    if (cmd == "pair") return {"--insecure", "-v", "--verbose"};
+    if (cmd == "pair") return {"--insecure", "--local", "-v", "--verbose"};
     if (cmd == "server") return {"--setup"};
     return {};
 }
@@ -185,8 +185,10 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
         if (idx == 1) {
             std::vector<std::string> names;
             for (const auto& st : kPeerSettings) names.emplace_back(st.name);
+            names.emplace_back("lan-port");
             return names;
         }
+        if (idx == 2 && pos.size() > 1 && pos[1] == "lan-port") return {"default"};
         return idx == 2 ? std::vector<std::string>{"on", "off"} : std::vector<std::string>{};
     }
     if (cmd == "peer:remove-address") {  // the peer, then one of its addresses

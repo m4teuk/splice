@@ -206,6 +206,18 @@ struct Session {
     // in the store when the peer's remember-address setting is on.
     std::vector<SeenAddress> seen;
     bool seed_seen = false;  // still to be offered to the path manager as candidates
+    // The LAN port the peer itself last told us it listens on (0 = it hasn't);
+    // persisted in the store, and preferred over the record's value.
+    uint16_t learned_port = 0;
+    uint16_t peer_lan_port() const {
+        return learned_port ? learned_port : rec.lan_port ? rec.lan_port : kLanDiscoPort;
+    }
+    // The record as it is in effect, for display (lan_port 0 = default).
+    ConnRecord effective() const {
+        ConnRecord r = rec;
+        r.lan_port = peer_lan_port() == kLanDiscoPort ? 0 : peer_lan_port();
+        return r;
+    }
     Millis last_active = 0;      // last tick this session had a pipe listening/running
     // Instances whose LocalEnd asked to shut down. Drained by tick(): a local
     // end must never be destroyed while one of its own methods is on the stack.
@@ -265,7 +277,9 @@ class Daemon {
     int lfd_ = -1;  // unix listen socket
     // LAN discovery: the shared UDP port we hear peers' queries on (see pathman.h).
     net::Fd lan_fd_;
-    uint16_t lan_port_ = kLanDiscoPort;
+    uint16_t lan_port_ = kLanDiscoPort;  // where *we* listen (own_lan_port())
+    Timer t_lan_bind_;
+    void set_lan_listening(bool want);   // the socket is open only while a peer is active
     std::vector<Endpoint> lan_targets_;  // SPL_LAN_TARGETS (tests): replaces broadcasting
     HintResolver hints_;
     Timer t_hints_, t_remember_;
@@ -294,7 +308,8 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
     cfg.own_priv = rec.own_priv;
     cfg.peer_pub = rec.peer_pub;
     cfg.server = server_;
-    cfg.lan_port = lan_port_;
+    cfg.lan_port = rec.lan_port;  // the peer's port (0 = default); refined just below
+    cfg.own_lan_port = lan_port_;
     cfg.lan_targets = lan_targets_;
     s.pm = std::make_unique<PathManager>(std::move(udp), cfg);
     s.ns = std::make_unique<Netstack>();
@@ -312,6 +327,19 @@ bool Daemon::start_session(const ConnRecord& rec, std::string* err) {
             add_reg(s, r.name, Reg{.type = r.type, .args = r.args, .limit = r.limit,
                                    .persisted = true});
     if (getenv("SPL_FORCE_RELAY")) pm->set_force_relay(true);  // test hook
+    // The peer told us (authenticated and fresh) that it listens on another LAN
+    // port: remember it and ask there from now on. Sessions are map nodes, so
+    // the pointer stays valid for as long as the path manager that calls this.
+    Session* sp = &s;
+    pm->on_peer_lan_port = [this, sp](uint16_t port) {
+        if (port == 0 || port == sp->peer_lan_port()) return;
+        spl::logf("[daemon] %s now listens for LAN discovery on port %u (was %u)",
+                  sp->name.c_str(), port, sp->peer_lan_port());
+        sp->learned_port = port;
+        if (store_) store_->save_learned_port(sp->name, port);
+        sp->pm->set_lan_port(port);
+        t_hints_.rearm();  // port-less hints now resolve to the new port
+    };
     apply_peer_settings(s);
     return true;
 }
@@ -799,6 +827,8 @@ void Daemon::on_lan_discovery() {
 void Daemon::apply_peer_settings(Session& s) {
     s.pm->set_relay_enabled(s.rec.use_relay);
     s.pm->set_lan_broadcast(s.rec.lan_discovery);
+    s.learned_port = store_ ? store_->load_learned_port(s.name) : 0;
+    s.pm->set_lan_port(s.peer_lan_port());
     s.seen.clear();
     if (s.rec.remember_address && store_) s.seen = store_->load_seen(s.name);
     s.seed_seen = !s.seen.empty();
@@ -814,18 +844,20 @@ void Daemon::refresh_hints(Millis now) {
         auto add = [&](const Endpoint& ep) {
             if (std::find(eps.begin(), eps.end(), ep) == eps.end()) eps.push_back(ep);
         };
+        // A host with no port is asked on the port this *peer* listens on.
+        const uint16_t peer_port = s.peer_lan_port();
         for (const auto& a : s.rec.addresses) {
             std::string host;
             uint16_t port = 0;
             if (!parse_address_hint(a, &host, &port)) continue;
-            if (auto ep = hints_.get(host, port ? port : lan_port_, now)) add(*ep);
+            if (auto ep = hints_.get(host, port ? port : peer_port, now)) add(*ep);
         }
         bool all_seeded = true;
         for (const auto& sa : s.seen) {
             std::string host;
             uint16_t port = 0;
             if (!parse_address_hint(sa.addr, &host, &port)) continue;
-            if (auto ep = hints_.get(host, lan_port_, now)) {
+            if (auto ep = hints_.get(host, peer_port, now)) {
                 add(*ep);
                 if (s.seed_seen && port) {
                     Endpoint exact = *ep;
@@ -864,6 +896,31 @@ void Daemon::remember_paths(Millis now) {
     }
 }
 
+// The discovery socket exists only while some peer session is active (something
+// offered, a connection running, or the warm window after): an idle daemon holds
+// no port open. A failed bind (port taken) is retried every 10s.
+void Daemon::set_lan_listening(bool want) {
+    if (!want) {
+        if (lan_fd_) {
+            poller_.remove(lan_fd_.get());
+            lan_fd_ = net::Fd{};
+            t_lan_bind_.rearm();  // reopen at once when a peer next becomes active
+        }
+        return;
+    }
+    if (lan_fd_ || !t_lan_bind_.due(mono_ms(), 10'000)) return;
+    std::string err;
+    lan_fd_ = net::udp_bind_shared(lan_port_, &err);
+    if (!lan_fd_) {
+        spl::logf("daemon: LAN discovery port %u unavailable (%s); peers on the local network "
+                  "won't find us by broadcast (set [peer] lan_port in the config to move it)",
+                  lan_port_, err.c_str());
+        return;
+    }
+    net::set_nonblocking(lan_fd_.get(), true);
+    poller_.set(lan_fd_.get(), [this] { on_lan_discovery(); });
+}
+
 void Daemon::adopt_server() {
     {
         std::lock_guard<std::mutex> lk(lookup_->m);
@@ -878,7 +935,7 @@ void Daemon::tick(Millis now) {
     if (!server_.valid()) adopt_server();
     if (t_hints_.due(now, 500)) refresh_hints(now);
     if (t_remember_.due(now, 2000)) remember_paths(now);
-    bool any_busy = false;
+    bool any_busy = false, any_warm = false;
     for (auto& [name, s] : sessions_) {
         // Activity gate: full disco only while something is listening or running,
         // or within the warm window after the last one. Otherwise the session
@@ -888,6 +945,7 @@ void Daemon::tick(Millis now) {
         if (busy) s.last_active = now;
         const bool warm = busy || (s.last_active && now - s.last_active < kWarmMs);
         s.pm->set_active(warm);
+        any_warm |= warm;
         // Dormant: don't drive the path manager OR lwIP — a frozen lwIP can't even
         // leak its own IPv6 housekeeping (MLD/DAD) out through the tunnel. handle_io
         // still runs, and a local REGISTER/OPEN flips us back to warm next tick.
@@ -942,6 +1000,8 @@ void Daemon::tick(Millis now) {
         }
         for (uint64_t id : expired) close_instance(s, id, false);
     }
+
+    set_lan_listening(any_warm);
 
     // Auto-stop: a non-sticky daemon exits once it's been idle long enough.
     if (any_busy) last_busy_ = now;
@@ -1269,7 +1329,7 @@ std::string Daemon::render_status(Millis now, bool verbose) {
         }
         o << " | tx " << human_bytes(ps.tx_direct + ps.tx_relay) << " rx "
           << human_bytes(ps.rx_direct + ps.rx_relay) << "\n";
-        o << "  " << settings_summary(s.rec) << " · " << ps.cands.size()
+        o << "  " << settings_summary(s.effective()) << " · " << ps.cands.size()
           << (ps.cands.size() == 1 ? " address known\n" : " addresses known\n");
 
         // --- verbose session detail ---
@@ -1384,8 +1444,7 @@ int Daemon::run() {
 
     // LAN discovery socket. Test hooks: SPL_LAN_PORT moves it (two daemons on one
     // host), SPL_LAN_TARGETS="host:port,…" replaces broadcasting with those targets.
-    if (const char* v = std::getenv("SPL_LAN_PORT"); v && std::atoi(v) > 0)
-        lan_port_ = static_cast<uint16_t>(std::atoi(v));
+    lan_port_ = own_lan_port();
     if (const char* v = std::getenv("SPL_LAN_TARGETS")) {
         std::istringstream is(v);
         std::string item;
@@ -1397,18 +1456,7 @@ int Daemon::run() {
                 lan_targets_.push_back(*ep);
         }
     }
-    {
-        std::string lerr;
-        lan_fd_ = net::udp_bind_shared(lan_port_, &lerr);
-        if (lan_fd_) {
-            net::set_nonblocking(lan_fd_.get(), true);
-            poller_.set(lan_fd_.get(), [this] { on_lan_discovery(); });
-        } else {
-            spl::logf("daemon: LAN discovery port %u unavailable (%s); peers on the local "
-                      "network won't find us by broadcast",
-                      lan_port_, lerr.c_str());
-        }
-    }
+    // (The socket itself is opened by tick() when a peer first becomes active.)
 
     const std::string path = daemon_socket_path();
     ::unlink(path.c_str());
@@ -1477,6 +1525,15 @@ std::string runtime_dir() {
 }
 
 std::string daemon_socket_path() { return runtime_dir() + "/daemon.sock"; }
+
+uint16_t own_lan_port() {
+    if (const char* v = std::getenv("SPL_LAN_PORT")) {
+        const int n = std::atoi(v);
+        if (n > 0 && n < 65536) return static_cast<uint16_t>(n);
+    }
+    const Config c = load_config();
+    return c.lan_port ? c.lan_port : kLanDiscoPort;
+}
 
 DaemonOpts default_daemon_opts() {
     DaemonOpts o{"splice.kussowski.dev", 443};

@@ -47,8 +47,9 @@ class Fd {
 Fd tcp_listen(const std::string& host, uint16_t port, int backlog, std::string* err);
 // Accept a connection; fills *peer if non-null. Invalid Fd on error/EINTR.
 Fd tcp_accept(int listen_fd, Endpoint* peer);
-// Connect to host:port (numeric or DNS).
-Fd tcp_connect(const std::string& host, uint16_t port, std::string* err);
+// Connect to host:port (numeric or DNS). timeout_ms > 0 bounds each connect
+// attempt (the returned socket is blocking either way); 0 = the OS default.
+Fd tcp_connect(const std::string& host, uint16_t port, std::string* err, int timeout_ms = 0);
 // Bind a dual-stack IPv6 UDP socket.
 Fd udp_bind(const std::string& host, uint16_t port, std::string* err);
 
@@ -62,6 +63,14 @@ uint16_t local_port(int fd);
 // advertising LAN candidates (same-NAT direct connectivity). Loopback and
 // link-local addresses are skipped. Best-effort: empty if enumeration fails.
 std::vector<Endpoint> local_interface_endpoints(uint16_t port);
+
+// The same addresses with their interface names ("eth0", "tailscale0", …), as
+// printable hosts — for telling the user where this machine can be reached.
+struct InterfaceAddress {
+    std::string ifname;
+    std::string host;
+};
+std::vector<InterfaceAddress> local_interface_addresses();
 
 // The IPv4 broadcast address of every up, non-loopback interface, with `port` —
 // where a LAN discovery query goes to reach everyone on each attached network.

@@ -6,6 +6,7 @@
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -221,7 +222,36 @@ std::vector<Endpoint> local_interface_endpoints(uint16_t port) {
     return out;
 }
 
-Fd tcp_connect(const std::string& host, uint16_t port, std::string* err) {
+std::vector<InterfaceAddress> local_interface_addresses() {
+    std::vector<InterfaceAddress> out;
+    ifaddrs* ifs = nullptr;
+    if (::getifaddrs(&ifs) != 0) return out;
+    for (ifaddrs* p = ifs; p; p = p->ifa_next) {
+        if (!p->ifa_addr || !(p->ifa_flags & IFF_UP) || (p->ifa_flags & IFF_LOOPBACK)) continue;
+        char buf[INET6_ADDRSTRLEN] = {0};
+        if (p->ifa_addr->sa_family == AF_INET) {
+            const auto* s = reinterpret_cast<const sockaddr_in*>(p->ifa_addr);
+            const uint8_t* b = reinterpret_cast<const uint8_t*>(&s->sin_addr);
+            if (b[0] == 127 || (b[0] == 169 && b[1] == 254)) continue;
+            inet_ntop(AF_INET, &s->sin_addr, buf, sizeof(buf));
+        } else if (p->ifa_addr->sa_family == AF_INET6) {
+            const auto* s = reinterpret_cast<const sockaddr_in6*>(p->ifa_addr);
+            const uint8_t* b = s->sin6_addr.s6_addr;
+            if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) continue;  // link-local
+            inet_ntop(AF_INET6, &s->sin6_addr, buf, sizeof(buf));
+        } else {
+            continue;
+        }
+        InterfaceAddress a{p->ifa_name ? p->ifa_name : "", buf};
+        bool dup = false;
+        for (const auto& o : out) dup |= o.host == a.host;
+        if (!dup) out.push_back(a);
+    }
+    ::freeifaddrs(ifs);
+    return out;
+}
+
+Fd tcp_connect(const std::string& host, uint16_t port, std::string* err, int timeout_ms) {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -236,7 +266,27 @@ Fd tcp_connect(const std::string& host, uint16_t port, std::string* err) {
     for (addrinfo* ai = res; ai; ai = ai->ai_next) {
         int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd < 0) continue;
-        if (::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+        bool ok = false;
+        if (timeout_ms > 0) {
+            set_nonblocking(fd, true);
+            int rc2 = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
+            if (rc2 != 0 && errno == EINPROGRESS) {
+                pollfd pfd{fd, POLLOUT, 0};
+                if (::poll(&pfd, 1, timeout_ms) == 1) {
+                    int soerr = 0;
+                    socklen_t sl = sizeof(soerr);
+                    getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl);
+                    rc2 = soerr == 0 ? 0 : -1;
+                } else {
+                    rc2 = -1;
+                }
+            }
+            ok = rc2 == 0;
+            set_nonblocking(fd, false);
+        } else {
+            ok = ::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0;
+        }
+        if (ok) {
             out = Fd{fd};
             break;
         }

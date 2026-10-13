@@ -32,6 +32,9 @@ DaemonOpts default_daemon_opts();
 // Resolved per-user runtime dir ($SPL_RUNTIME_DIR, else $XDG_RUNTIME_DIR/spl,
 // else /tmp/spl-<uid>), created 0700 on first use.
 std::string runtime_dir();
+// The port this machine listens on for LAN discovery and local pairing:
+// $SPL_LAN_PORT (tests), else `[peer] lan_port` in the config, else the default.
+uint16_t own_lan_port();
 std::string daemon_socket_path();
 
 // Control-line token encoding: '%', space and newlines are %-escaped so that

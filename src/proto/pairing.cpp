@@ -139,6 +139,7 @@ Bytes encode(const Offer& m) {
     w.u8(m.ula_prefix);
     w.array(m.uid);
     w.array(m.leader_pubkey);
+    w.u16(m.lan_port);
     return w.take();
 }
 Bytes encode(const Reply& m) {
@@ -148,6 +149,7 @@ Bytes encode(const Reply& m) {
     w.array(m.follower_pubkey);
     w.array(m.counter_ula_base);
     w.u8(m.counter_ula_prefix);
+    w.u16(m.lan_port);
     return w.take();
 }
 Bytes encode_neg(const NegMessage& m) {
@@ -165,6 +167,7 @@ std::optional<NegMessage> decode_neg(ByteSpan plaintext) {
             m.ula_prefix = r.u8();
             m.uid = r.array<kUidLen>();
             m.leader_pubkey = r.array<kWgKeyLen>();
+            if (r.remaining() == 2) m.lan_port = r.u16();  // absent from an older peer
             if (!r.done()) return std::nullopt;
             return NegMessage{m};
         }
@@ -176,6 +179,7 @@ std::optional<NegMessage> decode_neg(ByteSpan plaintext) {
             m.follower_pubkey = r.array<kWgKeyLen>();
             m.counter_ula_base = r.array<kIpLen>();
             m.counter_ula_prefix = r.u8();
+            if (r.remaining() == 2) m.lan_port = r.u16();  // absent from an older peer
             if (!r.done()) return std::nullopt;
             return NegMessage{m};
         }

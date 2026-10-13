@@ -66,6 +66,15 @@ def main():
         assert run(fenv, "register", "theleader", "echo", "ECHO").returncode == 0
         stop_all()
 
+        # ---- lan-port (the port a peer listens on; shown only when not the default) ----
+        assert "lan-port" not in peer(lenv, "ls")
+        assert "lan-port 9000" in peer(lenv, "set", "thefollower", "lan-port", "9000")
+        assert "lan-port 9000" in peer(lenv, "ls")
+        assert "lan port   9000" in peer(lenv, "show", "thefollower")
+        assert "lan-port" not in peer(lenv, "set", "thefollower", "lan-port", "default")
+        assert "(default)" in peer(lenv, "show", "thefollower")
+        print("  lan-port can be set per peer and reset to the default")
+
         # ---- relay ----
         # Discovery blind, so the relay is the only way to meet. With it off on one
         # side the peers never find each other; turning it on (live) fixes that.
