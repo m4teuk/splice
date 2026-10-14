@@ -193,6 +193,7 @@ if(SPL_BUILD_TESTS)
     tests/test_address_hint.cpp
     tests/test_pathman.cpp
     tests/test_peer_settings.cpp
+    tests/test_kinds.cpp
   )
   target_link_libraries(spl_tests PRIVATE spl_peer spl_crypto spl_core spl_proto spl_native GTest::gtest_main)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -238,6 +239,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME complete_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)
+
+    add_test(NAME kinds_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/kinds_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(kinds_integration PROPERTIES TIMEOUT 120)
 
     add_test(NAME help_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/help_it.py $<TARGET_FILE:spl>)

@@ -26,7 +26,9 @@ def main():
     assert len(cmds) > 20 and len(subs) >= 7, (cmds, subs)
     for c in cmds:
         assert f"\n  {c} " in overview.stdout, f"`{c}` missing from the overview"
-    topics = [[c] for c in cmds] + [["peer", s] for s in subs]
+    psubs = run("__complete", "2", "spl", "pipe").stdout.split()
+    assert psubs == ["register", "unregister", "open", "close"], psubs
+    topics = [[c] for c in cmds] + [["peer", s] for s in subs] + [["pipe", s] for s in psubs]
     for t in topics:
         page = run("help", *t)
         assert page.returncode == 0 and "usage: spl " + " ".join(t) in page.stdout, (t, page)
@@ -37,15 +39,16 @@ def main():
 
     # help is asked for, so nothing runs: no daemon is started, nothing is wiped
     for t in (["start"], ["reset"], ["update"], ["pair"], ["stop"], ["peer", "remove", "x"],
-              ["get", "x", "y"], ["register", "x", "y"]):
+              ["get", "x", "y"], ["pipe", "register", "x", "y"], ["drop", "x"]):
         r = run(*t, "--help")
         assert r.returncode == 0 and "usage:" in r.stdout, (t, r)
     assert not os.listdir(env["SPL_RUNTIME_DIR"]), "a --help started the daemon"
     print("  --help never runs the command")
 
     # …but past a pipe TYPE, --help belongs to the pipe's arguments
-    r = run("register", "nobody", "x", "SHARE_FILE", "--help", "--server", "127.0.0.1", "--port", "1")
-    assert "usage: spl register" not in r.stdout, r
+    r = run("pipe", "register", "nobody", "x", "SHARE_FILE", "--help", "--server", "127.0.0.1",
+            "--port", "1")
+    assert "usage: spl pipe register" not in r.stdout, r
     run("stop")  # that one did reach the daemon
 
     # misuse: the reason, the usage, where to read more — on stderr, exit 2

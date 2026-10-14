@@ -86,9 +86,9 @@ def main():
         envs = [lenv, fenv]
         for env in envs:
             assert subprocess.run([SPL, "start", *A], env=env, capture_output=True).returncode == 0
-        assert subprocess.run([SPL, "register", "theleader", "echo", "ECHO", *A], env=fenv,
+        assert subprocess.run([SPL, "pipe", "register", "theleader", "echo", "ECHO", *A], env=fenv,
                               capture_output=True).returncode == 0
-        p = subprocess.Popen([SPL, "open", "thefollower", "echo", *A], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "echo", *A], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True)
         p.stdin.write("never saw a server\n")
@@ -114,7 +114,7 @@ def main():
                             capture_output=True, text=True).stdout
         assert f"lan-port {moved}" in ls, ls
         # …and they are connected again, the leader now asking on the new port
-        p = subprocess.Popen([SPL, "open", "thefollower", "echo", *A], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "echo", *A], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True)
         p.stdin.write("found you again\n")

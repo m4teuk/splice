@@ -66,7 +66,7 @@ The verbs:
 ```
 REGISTER   <peer> <pipe_id> [LIMIT <n>] <type> <args…> -> OK | error (e.g. collision)
 UNREGISTER <peer> <pipe_id>                  -> OK | error
-OPEN       <peer> <peer_pipe_id> [WAIT] [FOLLOW] <type> <args…> -> <local_id> | error
+OPEN       <peer> <peer_pipe_id> [WAIT] [FOLLOW] [EXPECT <kind>] <type> <args…> -> <local_id> | error
 CLOSE      <peer> <local_id>                 -> OK | error   (forceful)
 STATUS                                       -> the state of everything
 RESET                                        -> drop every registered pipe everywhere
@@ -110,10 +110,18 @@ drops live ones, and kills running instances.
 - `OPEN` connects to a pipe the peer has registered; `<type> <args…>` describe
   the local end (e.g. `GET_FILE /tmp/out.pdf` connected to Alice's `mypdf`,
   which we happen to know is a `SHARE_FILE` — the daemon neither knows nor
-  cares whether the two types match). An optional `WAIT` token before the type
-  treats `UNKNOWN` as "not registered *yet*": the daemon keeps re-dialing until
-  the pipe appears or the instance is closed. Chat uses it (whoever starts
-  first just waits); `get` does not (a typo'd name should fail fast).
+  cares about the *type* on the other side, only its *kind*: see the handshake
+  below). An optional `WAIT` token before the type treats `UNKNOWN` as "not
+  registered *yet*": the daemon keeps re-dialing until the pipe appears or the
+  instance is closed. Chat uses it (whoever starts first just waits); `get` does
+  not (a typo'd name should fail fast). `EXPECT <kind>` (one encoded token)
+  names the kind the offer must be; without it the local type's own need
+  applies (`GET_FILE` needs `file/1 send`, `SHARE_FILE` needs `file/1 recv`,
+  the others take anything).
+- An `OPEN … PIPE` client gets a second line once the connection is settled,
+  before the first byte of the stream: `READY <kind>` (what the peer announced)
+  or `ERR <why>` (not offered, the wrong kind, or the peer unreachable) — then
+  the socket closes. A `FOLLOW`ing client gets the same failures as `E <why>`.
 - `CLOSE` kills any live instance by id — `OPEN`-created ones and instances
   spawned by our own named pipes alike (the registration itself stays and keeps
   listening; it is removed with `UNREGISTER`, which conversely leaves live
@@ -131,19 +139,36 @@ address space. The active side connects and sends the pipe id it wants; the
 passive daemon replies:
 
 - `UNKNOWN` — no such pipe registered for this peer; connection closed.
-- `OK` — a new instance of the named pipe is spawned and from the next byte the
-  connection *is* the spliced pipe pair. Raw bytes, both directions, until
-  either end closes.
+- `OK <kind>` — a new instance of the named pipe is spawned and from the next
+  byte the connection *is* the spliced pipe pair. Raw bytes, both directions,
+  until either end closes.
 
-Two-word vocabulary, by design. There is no BUSY, no error detail: if a pipe
-wants to refuse, negotiate, or report, it does so in-band in its own protocol
-after `OK`.
+The **kind** says what the offer is, from the offering side: a protocol with its
+version, then words about this end.
+
+| kind | offered by | the opener needs |
+|---|---|---|
+| `file/1 send` | `SHARE_FILE` (serve) | `GET_FILE` (get) |
+| `file/1 recv` | `GET_FILE` (inbox) | `SHARE_FILE` (send) |
+| `shell/1 pty` | `SHELL` (revshell) | the `spl shell` client |
+| `raw` | `ECHO`, `PIPE` | anything |
+
+It is announced by the daemon from the registration — not by the pipe, and not
+in-band — so the opener knows what it reached before a byte of any protocol
+moves, and the opening daemon refuses a mismatch itself (an inbox answered by
+`spl get` would otherwise leave both ends waiting to receive). A kind *matches*
+an expectation when the protocol (with version) is the same and every expected
+word is present. A bare `OK` (an older peer) is an unknown kind and is accepted.
+
+Still no BUSY and no error detail: if a pipe wants to refuse, negotiate, or
+report, it does so in-band in its own protocol after `OK`.
 
 One meta-request rides the same channel: a connection whose first line is
-`__LIST__` gets back the newline-separated names this peer serves the caller
-(then the connection closes). It's how `spl ls <peer>` and remote-pipe TAB
-completion discover what's available — introspection built from the same
-handshake, no special socket.
+`__LIST__` gets back one `<name>\t<kind>` line per pipe this peer serves the
+caller (then the connection closes). It's how `spl ls <peer>` (each offer, what
+it is, and the command that uses it) and remote-pipe TAB completion discover
+what's available — introspection built from the same handshake, no special
+socket.
 
 ## Pipe types
 
@@ -159,7 +184,7 @@ kernel, API, and wire format never change.
 | `PIPE` | from the creating process | to the creating process |
 
 `ECHO` is handy as a diagnostic target — register one explicitly with
-`spl register <peer> diagnostic ECHO` (the name is not special).
+`spl pipe register <peer> diagnostic ECHO` (the name is not special).
 
 `PIPE` is the escape hatch to the outside world: the unix-socket connection
 that issued the `REGISTER`/`OPEN` itself becomes the byte stream after the
@@ -281,12 +306,13 @@ unique per peer, so `CLOSE alice 1` kicks the inbound `mypdf` transfer just as
   it sends nothing at all — no relay traffic, no probing, lwIP frozen — so an
   idle daemon with several paired-but-unused peers is silent. A local
   `REGISTER`/`OPEN` wakes it on the next tick. There is no implicit `diagnostic`
-  pipe; register one yourself (`spl register <peer> diagnostic ECHO`) if you want
+  pipe; register one yourself (`spl pipe register <peer> diagnostic ECHO`) if you want
   an echo target.
 - CLI commands are thin sugar over the verbs: `spl serve alice --name x f` ≈
   `REGISTER alice x SHARE_FILE f`; `spl get alice x -o f` ≈
   `OPEN alice x GET_FILE f`; `spl chat alice` ≈ `OPEN alice chat PIPE` with the
-  terminal bridged.
+  terminal bridged; `spl drop alice x` ≈ `UNREGISTER alice x`. The verbs
+  themselves are reachable as `spl pipe register|unregister|open|close`.
 
 ## Later (explicitly out of scope now)
 

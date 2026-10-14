@@ -63,7 +63,7 @@ def main():
         print("  named + --limit one-shot retires after one use")
 
         # unregister stops offering it
-        assert run(fenv, "unregister", "theleader", "shell").returncode == 0
+        assert run(fenv, "pipe", "unregister", "theleader", "shell").returncode == 0
         out = attach(lenv, "echo GONE\nexit\n")
         assert "GONE" not in out, "unregistered shell still served: " + out
         print("  unregister stops offering")
@@ -133,14 +133,14 @@ def main():
 
         say("echo LIVE_$((1+1))")
         assert expect(b"LIVE_2"), "shell did not come up"
-        r = run(fenv, "unregister", "theleader", "shell")
+        r = run(fenv, "pipe", "unregister", "theleader", "shell")
         assert r.returncode == 0, r.stdout + r.stderr
-        assert "still active" in r.stdout and "spl close theleader" in r.stdout, r.stdout
+        assert "still active" in r.stdout and "spl pipe close theleader" in r.stdout, r.stdout
         say("echo AFTER_$((2+3))")
         assert expect(b"AFTER_5"), "unregistering the shell killed the live session"
         print("  unregister keeps the live shell, and says so")
 
-        assert run(fenv, "register", "theleader", "shell", "ECHO").returncode == 0
+        assert run(fenv, "pipe", "register", "theleader", "shell", "ECHO").returncode == 0
         st = run(fenv, "status").stdout
         offered = st.split("OFFERED", 1)[1].split("CONNECTIONS", 1)[0]
         conns = st.split("CONNECTIONS", 1)[1]
@@ -155,7 +155,7 @@ def main():
         st = run(fenv, "status").stdout
         assert "shell  ECHO  (0 finished, 0 active)" in st, st  # old session isn't counted here
         assert "in   shell  SHELL" not in st, st
-        run(fenv, "unregister", "theleader", "shell")
+        run(fenv, "pipe", "unregister", "theleader", "shell")
         print("  re-registering a name doesn't adopt the old session")
 
         for env in (lenv, fenv):

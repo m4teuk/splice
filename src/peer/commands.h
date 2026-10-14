@@ -4,8 +4,9 @@
 //   managed = handled by peer_cmd_main (daemon / pipe plumbing)
 //   alias   = dispatchable but hidden from completion
 //
-// Managing paired peers lives under one group, `spl peer <sub>` (kPeerSubcommands);
-// the top level is about the daemon, pipes and data.
+// Managing paired peers lives under one group, `spl peer <sub>` (kPeerSubcommands),
+// and the raw pipe plumbing under another, `spl pipe <sub>` (kPipeSubcommands);
+// the top level is about the daemon and what you do with peers.
 #pragma once
 
 #include <string_view>
@@ -24,9 +25,9 @@ inline constexpr CommandDef kCommands[] = {
     {"chat", false, false},   {"revshell", false, false}, {"shell", false, false},
     {"update", false, false}, {"status", true, false},    {"ping", true, false},
     {"config", true, false},  {"start", true, false},     {"stop", true, false},
-    {"reset", true, false},   {"reload", true, false},    {"register", true, false},
-    {"unregister", true, false}, {"open", true, false},   {"close", true, false},
-    {"ls", true, false},      {"peer", false, false},     {"help", false, false},
+    {"reset", true, false},   {"reload", true, false},    {"drop", true, false},
+    {"ls", true, false},      {"peer", false, false},     {"pipe", false, false},
+    {"help", false, false},
 };
 
 struct PeerSubDef {
@@ -39,6 +40,9 @@ inline constexpr PeerSubDef kPeerSubcommands[] = {
     {"set", false},
     {"list", true},         {"rm", true},
 };
+
+// `spl pipe <sub>`: the raw plumbing every other command is built on.
+inline constexpr std::string_view kPipeSubcommands[] = {"register", "unregister", "open", "close"};
 
 inline bool is_managed_command(std::string_view name) {
     for (const auto& c : kCommands)

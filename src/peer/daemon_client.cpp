@@ -90,6 +90,16 @@ std::string send_command(int fd, const std::string& line) {
     return read_line(fd);
 }
 
+bool await_ready(int fd, std::string* kind, std::string* err) {
+    const std::string r = read_line(fd);
+    if (r.rfind("READY", 0) == 0) {
+        if (kind) *kind = r.size() > 6 ? r.substr(6) : "";
+        return true;
+    }
+    if (err) *err = r.rfind("ERR ", 0) == 0 ? r.substr(4) : "lost contact with the daemon";
+    return false;
+}
+
 std::string read_to_eof(int fd) {
     std::string body, buf(4096, '\0');
     for (;;) {

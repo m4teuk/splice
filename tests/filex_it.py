@@ -105,7 +105,7 @@ def main():
         assert not os.path.exists(os.path.join(inbox, "clip.bin")), "leaked into default inbox"
         # sending to a non-existent inbox name is reported, not silently dropped
         r = spl(fenv, "send", "theleader", clip, "--name", "nope", *A, timeout=60)
-        assert r.returncode != 0 and "served" in (r.stdout + r.stderr), (r.stdout + r.stderr)
+        assert r.returncode != 0 and "isn't offered" in (r.stdout + r.stderr), (r.stdout + r.stderr)
         print("  named inboxes OK (routing + unknown-name error)")
 
         # --- a name is one pipe per peer; re-registering the same name collides ---
@@ -133,7 +133,7 @@ def main():
 
         # --- not a serve pipe: getting a non-file pipe reports a clear error ---
         r = spl(lenv, "get", "thefollower", "nosuchpipe", *A)
-        assert r.returncode != 0 and "served" in (r.stdout + r.stderr), (r.stdout + r.stderr)
+        assert r.returncode != 0 and "isn't offered" in (r.stdout + r.stderr), (r.stdout + r.stderr)
         print("  not-served error is clear")
 
         # --- unreachable peer: sending to a peer whose daemon is down says so,

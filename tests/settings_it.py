@@ -63,7 +63,7 @@ def main():
             for env in (lenv, fenv):
                 run(env, "stop")
 
-        assert run(fenv, "register", "theleader", "echo", "ECHO").returncode == 0
+        assert run(fenv, "pipe", "register", "theleader", "echo", "ECHO").returncode == 0
         stop_all()
 
         # ---- lan-port (the port a peer listens on; shown only when not the default) ----

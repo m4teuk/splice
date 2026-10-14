@@ -30,11 +30,14 @@ def main():
 
         # commands (no daemon needed)
         cmds = comp(lenv, 1, "spl")
-        for c in ("serve", "get", "send", "inbox", "chat", "register", "close", "status",
+        for c in ("serve", "get", "send", "inbox", "chat", "pipe", "drop", "status",
                   "ping", "config"):
             assert c in cmds, f"missing command {c}: {cmds}"
         for gone in ("rename", "remove", "add", "list", "rm"):
             assert gone not in cmds, f"'{gone}' should only exist under `spl peer`: {cmds}"
+        for gone in ("register", "unregister", "open", "close"):
+            assert gone not in cmds, f"'{gone}' should only exist under `spl pipe`: {cmds}"
+        assert comp(lenv, 2, "spl", "pipe") == ["register", "unregister", "open", "close"]
         print("  commands OK")
 
         # `spl peer` is the one home for managing paired peers
@@ -61,33 +64,34 @@ def main():
         print("  peer names OK")
 
         # pipe TYPEs
-        types = comp(lenv, 4, "spl", "register", "thefollower", "x")
+        types = comp(lenv, 5, "spl", "pipe", "register", "thefollower", "x")
         assert types == ["ECHO", "SHARE_FILE", "GET_FILE", "SHELL", "PIPE"], types
         # SHARE_FILE arg -> files
-        assert comp(lenv, 5, "spl", "register", "thefollower", "x", "SHARE_FILE") == ["__FILES__"]
+        assert comp(lenv, 6, "spl", "pipe", "register", "thefollower", "x", "SHARE_FILE") == ["__FILES__"]
         # ECHO arg -> nothing
-        assert comp(lenv, 5, "spl", "register", "thefollower", "x", "ECHO") == []
+        assert comp(lenv, 6, "spl", "pipe", "register", "thefollower", "x", "ECHO") == []
         print("  types + type-args OK")
 
 
         # daemon-backed: instance ids for `close`
         for env in (lenv, fenv):
             subprocess.run([SPL, "start", *A], env=env, capture_output=True, timeout=20)
-        subprocess.run([SPL, "register", "theleader", "echo", "ECHO"], env=fenv,
+        subprocess.run([SPL, "pipe", "register", "theleader", "echo", "ECHO"], env=fenv,
                        capture_output=True, timeout=15)
-        p = subprocess.Popen([SPL, "open", "thefollower", "echo"], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "echo"], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         p.stdin.write("hi\n"); p.stdin.flush(); p.stdout.readline()
         time.sleep(0.5)
-        ids = comp(lenv, 3, "spl", "close", "thefollower")
+        ids = comp(lenv, 4, "spl", "pipe", "close", "thefollower")
         assert ids and all(i.isdigit() for i in ids), f"instance ids: {ids}"
         print(f"  instance-id completion OK ({ids})")
         p.stdin.close(); stop(p)
 
         # my-pipe names for `unregister` (persisted)
-        mine = comp(fenv, 3, "spl", "unregister", "theleader")
+        mine = comp(fenv, 4, "spl", "pipe", "unregister", "theleader")
         assert "echo" in mine, mine
-        print("  unregister pipe-name OK")
+        assert "echo" in comp(fenv, 3, "spl", "drop", "theleader")
+        print("  unregister/drop pipe-name OK")
 
         # remote pipe completion for `get` (the LIST verb): the follower serves
         # 'echo'; from the leader, `get thefollower <TAB>` should offer it.

@@ -145,6 +145,10 @@ struct Instance {
     std::string reg;
     uint64_t reg_serial = 0;
     std::string want;         // outbound: remote pipe id to request
+    // The kind of the offer (pipes.h): for inbound what we announced, for
+    // outbound what the peer announced ("" = an older peer that doesn't say).
+    std::string kind;
+    std::string expect;       // outbound: the kind our local end needs ("" = any)
     std::string type;         // local end type, snapshotted at connect (for status)
     std::vector<std::string> args;  // …and its arguments
     TcpConn* conn = nullptr;  // tunnel side (owned by the session's Netstack)
@@ -243,6 +247,8 @@ class Daemon {
     void dial(Session& s, Instance& in, Millis now);
     void route_to_tunnel(Session& s, Instance& in, ByteSpan b);
     void close_instance(Session& s, uint64_t id, bool finished);
+    // An OPEN that can't proceed: tell whoever waits on it why, then close it.
+    void fail_open(Session& s, Instance& in, const std::string& why);
     void add_reg(Session& s, const std::string& name, Reg reg);
     void release_owner_fd(Session& s, int fd);  // close a PIPE owner socket nobody uses
     void watch_cfd(Session& s, Instance& in);
@@ -447,7 +453,8 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             }
             if (line == "__LIST__") {  // the names we serve this peer
                 std::string names;
-                for (const auto& [rname, reg] : s.regs) names += rname + "\n";
+                for (const auto& [rname, reg] : s.regs)
+                    names += rname + "\t" + offer_kind(reg.type) + "\n";
                 in.conn->send(as_span(names));
                 close_instance(s, id, false);
                 return;
@@ -483,10 +490,26 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             }
             spl::logf("[daemon] %s requested '%s' -> OK (#%llu, %s)", s.name.c_str(), line.c_str(),
                       (unsigned long long)id, in.type.c_str());
-            in.conn->send(as_span(std::string("OK\n")));
+            in.kind = offer_kind(reg.type);
+            in.conn->send(as_span("OK " + in.kind + "\n"));
             bind_end(s, in);
         } else {
-            if (line != "OK") {  // UNKNOWN or garbage
+            const bool ok = line == "OK" || line.rfind("OK ", 0) == 0;
+            // (the peer's words: it reaches logs, status and the user's terminal)
+            if (ok) in.kind = printable(line.size() > 3 ? line.substr(3) : "");
+            if (ok && !kind_matches(in.kind, in.expect)) {
+                // Reached, but it's something else (an inbox, not a file share…):
+                // say what it is and how to use it, rather than speak the wrong
+                // protocol at it.
+                const std::string use = kind_usage(in.kind, s.name, in.want);
+                const std::string why = "'" + in.want + "' on " + s.name + " " +
+                                        kind_label(in.kind) + (use.empty() ? "" : "; use: " + use);
+                spl::logf("[daemon] #%llu '%s' is %s, need %s; closing", (unsigned long long)id,
+                          in.want.c_str(), in.kind.c_str(), in.expect.c_str());
+                fail_open(s, in, why);
+                return;
+            }
+            if (!ok) {  // UNKNOWN or garbage
                 if (in.wait && in.conn) {  // not registered yet: drop this conn, re-dial
                     spl::logf("[daemon] #%llu got '%s' for '%s'; not registered yet, retrying",
                               (unsigned long long)id, line.c_str(), in.want.c_str());
@@ -500,18 +523,15 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                 }
                 spl::logf("[daemon] #%llu got '%s' for '%s'; giving up", (unsigned long long)id,
                           line.c_str(), in.want.c_str());
-                if (in.follow_fd >= 0) {  // tell the client *why* (clearer than "interrupted")
-                    const std::string m = "E '" + in.want + "' isn't served by " + s.name +
-                                          " (try: spl ls " + s.name + ")\n";
-                    spl::write_all(in.follow_fd, m.data(), m.size());
-                    ::close(in.follow_fd);
-                    in.follow_fd = -1;
-                }
-                close_instance(s, id, false);
+                fail_open(s, in, "'" + in.want + "' isn't offered by " + s.name +
+                                     " (see: spl ls " + s.name + ")");
                 return;
             }
-            spl::logf("[daemon] #%llu '%s' accepted; splicing", (unsigned long long)id,
-                      in.want.c_str());
+            spl::logf("[daemon] #%llu '%s' accepted (%s); splicing", (unsigned long long)id,
+                      in.want.c_str(), in.kind.empty() ? "kind unknown" : in.kind.c_str());
+            // A client socket (PIPE) learns it's connected, and to what, before
+            // the first byte of the stream.
+            if (in.cfd >= 0) write_str(in.cfd, "READY " + in.kind + "\n");
             bind_end(s, in);
         }
         if (!rest.empty()) on_tunnel_data(s, id, as_span(rest));
@@ -689,6 +709,16 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     // registration is already gone (unregistered/retired) and this was the last
     // instance on it, close it now — that's what ends a chat host process.
     if (shared_fd >= 0) release_owner_fd(s, shared_fd);
+}
+
+void Daemon::fail_open(Session& s, Instance& in, const std::string& why) {
+    if (in.follow_fd >= 0) {  // a following CLI prints it (clearer than "interrupted")
+        write_str(in.follow_fd, "E " + why + "\n");
+        ::close(in.follow_fd);
+        in.follow_fd = -1;
+    }
+    if (in.cfd >= 0 && in.cfd_owned) write_str(in.cfd, "ERR " + why + "\n");  // a PIPE client
+    close_instance(s, in.id, false);
 }
 
 void Daemon::add_reg(Session& s, const std::string& name, Reg reg) {
@@ -998,7 +1028,11 @@ void Daemon::tick(Millis now) {
                 }
             }
         }
-        for (uint64_t id : expired) close_instance(s, id, false);
+        for (uint64_t id : expired)
+            if (auto it = s.insts.find(id); it != s.insts.end())
+                fail_open(s, *it->second, "couldn't reach " + name +
+                                              " (is their daemon running? check: spl ping " +
+                                              name + ")");
     }
 
     set_lan_listening(any_warm);
@@ -1187,7 +1221,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         std::string ids, hint;
         for (uint64_t id : live) {
             ids += (ids.empty() ? "#" : ", #") + std::to_string(id);
-            hint += (hint.empty() ? "spl close " : "; spl close ") + s->name + " " +
+            hint += (hint.empty() ? "spl pipe close " : "; spl pipe close ") + s->name + " " +
                     std::to_string(id);
         }
         const std::string n = live.size() == 1 ? "1 connection" : std::to_string(live.size()) +
@@ -1202,14 +1236,22 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         // OPEN <peer> <pipe> [WAIT] [FOLLOW] <TYPE> [args]
         //   WAIT   keeps re-dialing while the peer answers UNKNOWN (not registered yet)
         //   FOLLOW streams progress (P/D/E lines) back on this control connection
+        //   EXPECT <kind>  the offer must be of this kind (pipes.h); without it,
+        //          what the local TYPE needs (GET_FILE needs a file sender, …)
         size_t ti = 3;
         bool wait = false, follow = false;
-        for (; ti < t.size() && (t[ti] == "WAIT" || t[ti] == "FOLLOW"); ++ti) {
+        std::string expect;
+        for (; ti < t.size() && (t[ti] == "WAIT" || t[ti] == "FOLLOW" || t[ti] == "EXPECT"); ++ti) {
             if (t[ti] == "WAIT") wait = true;
             if (t[ti] == "FOLLOW") follow = true;
+            if (t[ti] == "EXPECT") {
+                if (++ti >= t.size()) break;
+                expect = t[ti];
+            }
         }
         if (t.size() <= ti)
-            return reply_close("ERR usage: OPEN <peer> <pipe> [WAIT] [FOLLOW] <TYPE> [args]\n");
+            return reply_close(
+                "ERR usage: OPEN <peer> <pipe> [WAIT] [FOLLOW] [EXPECT <kind>] <TYPE> [args]\n");
         std::string err;
         Session* s = session_for(t[1], &err);
         if (!s) return reply_close("ERR " + err + "\n");
@@ -1219,6 +1261,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
         in->type = t[ti];
         in->args.assign(t.begin() + ti + 1, t.end());
         in->wait = wait;
+        in->expect = expect.empty() ? local_expects(in->type) : expect;
         const Millis now = mono_ms();
         in->dial_deadline = wait ? std::numeric_limits<Millis>::max() : now + kDialDeadlineMs;
         in->next_dial = now;

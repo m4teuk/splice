@@ -36,6 +36,11 @@ bool ensure_daemon(const DaemonOpts& opts, std::string* err);
 // PIPE-typed commands whose connection becomes the byte stream).
 std::string send_command(int fd, const std::string& line);
 
+// After `OPEN … PIPE`: wait until the daemon reports the connection — "READY
+// <kind>" (true, *kind = what the peer announced, "" if it didn't say) or "ERR
+// <why>" (false, *err = why). From then on `fd` is the byte stream.
+bool await_ready(int fd, std::string* kind, std::string* err);
+
 // Read `fd` until EOF (or recv timeout) and return everything read.
 std::string read_to_eof(int fd);
 

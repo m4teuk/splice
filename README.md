@@ -111,7 +111,8 @@ spl shell    <peer> [--name n]               open a shell on the peer (feels lik
 
 spl status [-v]                       all peers: path, pipes, progress (-v: addresses, bytes, candidates)
 spl ping  <peer>                      reachability + rough RTT
-spl ls <peer>                         what the peer offers you
+spl ls <peer>                         what the peer offers you, and the command for each
+spl drop [<peer>] <name>              stop offering something (a served file, an inbox, a shell)
 
 spl start | stop                      run the daemon explicitly / shut it down
 spl reset                             drop every registered pipe everywhere
@@ -124,7 +125,7 @@ spl peer remove-address <peer> <host[:port]>
 spl peer set <peer> <setting> <on|off>        relay | lan-discovery | remember-address (all on by default)
 spl update                            re-run the installer to get the latest spl
 
-spl register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, PIPE)
+spl pipe register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, SHELL, PIPE)
 ```
 
 **Transfers are robust by default.** They handle directories recursively, verify

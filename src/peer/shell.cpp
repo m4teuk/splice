@@ -173,10 +173,10 @@ void send_winsize(int fd) {
     send_frame(fd, kWinsz, reinterpret_cast<const char*>(b), 4);
 }
 
-// Bridge our terminal to the shell pipe `fd`: stdin -> DATA frames, SIGWINCH ->
-// WINSZ frames, and the raw pipe output -> stdout. Returns when the shell/peer
-// closes the pipe.
-int run_shell_client(int fd, const std::string& peer, const std::string& name) {
+// Bridge our terminal to the shell pipe `fd` (already connected: the daemon said
+// READY): stdin -> DATA frames, SIGWINCH -> WINSZ frames, and the raw pipe output
+// -> stdout. Returns when the shell/peer closes the pipe.
+int run_shell_client(int fd) {
     ::signal(SIGPIPE, SIG_IGN);
     const bool tty = ::isatty(STDIN_FILENO);
     termios saved{};
@@ -189,7 +189,7 @@ int run_shell_client(int fd, const std::string& peer, const std::string& name) {
         send_winsize(fd);  // tell the host our size before the shell draws anything
     }
 
-    bool stdin_open = true, got_bytes = false;
+    bool stdin_open = true;
     for (;;) {
         if (g_winch) {
             g_winch = 0;
@@ -210,7 +210,6 @@ int run_shell_client(int fd, const std::string& peer, const std::string& name) {
             char buf[kChunk];
             const ssize_t r = ::read(fd, buf, sizeof(buf));
             if (r <= 0) break;  // shell exited / peer closed
-            got_bytes = true;
             spl::write_all(STDOUT_FILENO, buf, static_cast<size_t>(r));
         }
         if (n == 2 && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
@@ -235,11 +234,7 @@ int run_shell_client(int fd, const std::string& peer, const std::string& name) {
         ::tcsetattr(STDIN_FILENO, TCSANOW, &saved);
         ::signal(SIGWINCH, SIG_DFL);
     }
-    // Never received a byte: almost always the peer isn't offering this shell.
-    if (!got_bytes)
-        spl::logf("spl shell: %s isn't offering '%s' (try: spl ls %s)", peer.c_str(), name.c_str(),
-                  peer.c_str());
-    return got_bytes ? 0 : 1;
+    return 0;
 }
 
 // Shared arg parsing for the two commands: <peer> plus --name/--limit/server.
@@ -302,7 +297,7 @@ int revshell_main(int argc, char** argv) {
     const std::string suffix = o.name == "shell" ? "" : " --name " + o.name;
     std::printf("offering a shell on this machine to %s as '%s'\n", o.peer.c_str(), o.name.c_str());
     std::printf("  they attach with:  spl shell <you>%s\n", suffix.c_str());
-    std::printf("  this lets %s run commands as you until you stop it: spl unregister %s %s\n",
+    std::printf("  this lets %s run commands as you until you stop it: spl drop %s %s\n",
                 o.peer.c_str(), o.peer.c_str(), o.name.c_str());
     return 0;
 }
@@ -327,13 +322,19 @@ int shell_main(int argc, char** argv) {
         return 1;
     }
     const std::string r =
-        send_command(fd, "OPEN " + ctl_encode(o.peer) + " " + ctl_encode(o.name) + " PIPE");
+        send_command(fd, "OPEN " + ctl_encode(o.peer) + " " + ctl_encode(o.name) + " EXPECT " +
+                             ctl_encode("shell/1") + " PIPE");
     if (!ok_reply(r)) {
         daemon_fail("spl shell", r);
         ::close(fd);
         return 1;
     }
-    const int rc = run_shell_client(fd, o.peer, o.name);
+    if (!await_ready(fd, nullptr, &err)) {
+        spl::logf("spl shell: %s", err.c_str());
+        ::close(fd);
+        return 1;
+    }
+    const int rc = run_shell_client(fd);
     ::close(fd);
     return rc;
 }

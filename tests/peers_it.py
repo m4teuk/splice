@@ -47,11 +47,11 @@ def main():
 
         for env in (lenv, fenv):
             assert run(env, "start").returncode == 0
-        assert run(fenv, "register", "theleader", "echo2", "ECHO").returncode == 0
+        assert run(fenv, "pipe", "register", "theleader", "echo2", "ECHO").returncode == 0
         assert ping_ok(lenv, "thefollower", 20)
 
         # a live connection, to see it survive the renames below
-        p = subprocess.Popen([SPL, "open", "thefollower", "echo2", *A], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "echo2", *A], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         p.stdin.write("before\n")
         p.stdin.flush()
@@ -95,7 +95,7 @@ def main():
         r = run(fenv, "reload", flags=False)
         assert r.returncode == 0 and "1 added" in r.stdout, r.stdout + r.stderr
         assert "PEER alice" in status(fenv), status(fenv)
-        assert run(fenv, "register", "alice", "echo3", "ECHO").returncode == 0
+        assert run(fenv, "pipe", "register", "alice", "echo3", "ECHO").returncode == 0
         assert ping_ok(lenv, "bob", 40), "re-added peer never became reachable"
         print("  spl reload picks up a new peer file")
 

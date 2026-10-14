@@ -402,6 +402,74 @@ std::string GetFileEnd::describe() const {
            human_bytes(got_) + "/" + human_bytes(size_) + ")";
 }
 
+// ================= kinds =================
+
+namespace {
+std::vector<std::string> words(const std::string& s) {
+    std::vector<std::string> w;
+    size_t i = 0;
+    while (i < s.size()) {
+        const size_t j = s.find(' ', i);
+        const std::string t = s.substr(i, j == std::string::npos ? std::string::npos : j - i);
+        if (!t.empty()) w.push_back(t);
+        if (j == std::string::npos) break;
+        i = j + 1;
+    }
+    return w;
+}
+}  // namespace
+
+std::string printable(const std::string& s) {
+    std::string out = s;
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) c = '?';
+    return out;
+}
+
+std::string offer_kind(const std::string& type) {
+    if (type == "SHARE_FILE") return "file/1 send";
+    if (type == "GET_FILE") return "file/1 recv";
+    if (type == "SHELL") return "shell/1 pty";
+    return "raw";  // ECHO, PIPE: bytes with no protocol of their own
+}
+
+std::string local_expects(const std::string& type) {
+    if (type == "GET_FILE") return "file/1 send";   // receiving needs a sender…
+    if (type == "SHARE_FILE") return "file/1 recv";  // …and sending a receiver
+    return "";
+}
+
+bool kind_matches(const std::string& remote, const std::string& expect) {
+    if (remote.empty() || expect.empty()) return true;
+    const auto r = words(remote), e = words(expect);
+    if (r.empty() || e.empty() || r[0] != e[0]) return false;
+    for (size_t i = 1; i < e.size(); ++i) {
+        bool found = false;
+        for (size_t j = 1; j < r.size(); ++j) found = found || r[j] == e[i];
+        if (!found) return false;
+    }
+    return true;
+}
+
+std::string kind_label(const std::string& kind) {
+    if (kind_matches(kind, "file/1 send") && !kind.empty()) return "sends files";
+    if (kind_matches(kind, "file/1 recv") && !kind.empty()) return "receives files";
+    if (kind_matches(kind, "shell/1") && !kind.empty()) return "a shell";
+    if (kind == "raw") return "a raw pipe";
+    return kind.empty() ? "unknown (an older spl)" : kind;
+}
+
+std::string kind_usage(const std::string& kind, const std::string& peer, const std::string& name) {
+    if (kind.empty()) return "";
+    if (kind_matches(kind, "file/1 send")) return "spl get " + peer + " " + name;
+    if (kind_matches(kind, "file/1 recv"))
+        return "spl send " + peer + " <path>" + (name == "inbox" ? "" : " --name " + name);
+    if (kind_matches(kind, "shell/1"))
+        return "spl shell " + peer + (name == "shell" ? "" : " --name " + name);
+    if (kind == "raw") return name == "chat" ? "spl chat " + peer : "spl pipe open " + peer + " " + name;
+    return "";
+}
+
 // ================= factory =================
 
 std::unique_ptr<LocalEnd> make_local_end(const std::string& type,

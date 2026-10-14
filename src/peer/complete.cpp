@@ -8,6 +8,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <set>
 #include <sstream>
 #include <string>
@@ -42,9 +43,9 @@ std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "inbox") return {"--name", "--limit", "--server", "--port"};
     if (cmd == "revshell") return {"--name", "--limit", "--server", "--port"};
     if (cmd == "shell") return {"--name", "--server", "--port"};
-    if (cmd == "register") return {"LIMIT", "--server", "--port"};
-    if (cmd == "open" || cmd == "unregister" || cmd == "close" || cmd == "chat" ||
-        cmd == "ping" || cmd == "start")
+    if (cmd == "pipe:register") return {"LIMIT", "--server", "--port"};
+    if (cmd == "pipe:open" || cmd == "pipe:unregister" || cmd == "pipe:close" || cmd == "chat" ||
+        cmd == "ping" || cmd == "start" || cmd == "drop")
         return {"--server", "--port"};
     if (cmd == "pair") return {"--name", "--server", "--port", "--at", "--lan-port"};
     if (cmd == "server") return {"--bind", "--port", "--cert", "--key"};
@@ -54,7 +55,7 @@ std::set<std::string> bool_flags(const std::string& cmd) {
     if (cmd == "get") return {"-f", "--force", "-b", "--background"};
     if (cmd == "send") return {"-b", "--background"};
     if (cmd == "inbox") return {"-f", "--force"};
-    if (cmd == "open") return {"--wait"};
+    if (cmd == "pipe:open") return {"--wait"};
     if (cmd == "status") return {"-v", "--verbose"};
     if (cmd == "start") return {"--foreground"};
     if (cmd == "pair") return {"--insecure", "--local", "-v", "--verbose"};
@@ -155,7 +156,7 @@ std::vector<std::string> remote_pipes(const std::string& peer) {
     std::istringstream is(daemon_list(peer, 1200));
     std::string line;
     while (std::getline(is, line))
-        if (!line.empty()) names.push_back(line);
+        if (!line.empty()) names.push_back(line.substr(0, line.find('\t')));  // "<name>\t<kind>"
     return names;
 }
 
@@ -210,17 +211,19 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
                 if (!c.alias) subs.emplace_back(c.name);
             return subs;
         }
+        if (idx == 1 && !pos.empty() && pos[0] == "pipe")
+            return {std::begin(kPipeSubcommands), std::end(kPipeSubcommands)};
         return {};
     }
-    if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
-    if (cmd == "close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
-    if (cmd == "register") {
+    if (cmd == "pipe:unregister" || cmd == "drop") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
+    if (cmd == "pipe:close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
+    if (cmd == "pipe:register") {
         if (idx == 0) return peer();
         if (idx == 1) return {};       // new pipe name: nothing to complete
         if (idx == 2) return kTypes;   // TYPE
         return type_args(2);           // args after TYPE
     }
-    if (cmd == "open") {
+    if (cmd == "pipe:open") {
         if (idx == 0) return peer();
         if (idx == 1) return remote_pipes(pos.empty() ? "" : pos[0]);  // remote pipe
         if (idx == 2) return kTypes;   // local TYPE
@@ -242,19 +245,24 @@ int complete_main(int argc, char** argv) {
         emit(command_names());
         return 0;
     }
-    // `spl peer <sub> …`: complete the subcommand, then fold the group word away
-    // so the rest is handled like any command (named "peer:<sub>").
-    if (words.size() > 1 && words[1] == "peer") {
+    // `spl peer|pipe <sub> …`: complete the subcommand, then fold the group word
+    // away so the rest is handled like any command (named "peer:<sub>" / "pipe:<sub>").
+    if (words.size() > 1 && (words[1] == "peer" || words[1] == "pipe")) {
+        const std::string group = words[1];
         if (cword == 2) {
             std::vector<std::string> subs;
-            for (const auto& c : kPeerSubcommands)
-                if (!c.alias) subs.emplace_back(c.name);
+            if (group == "peer") {
+                for (const auto& c : kPeerSubcommands)
+                    if (!c.alias) subs.emplace_back(c.name);
+            } else {
+                subs.assign(std::begin(kPipeSubcommands), std::end(kPipeSubcommands));
+            }
             emit(subs);
             return 0;
         }
         words.erase(words.begin() + 1);
         --cword;
-        if (words.size() > 1) words[1] = "peer:" + words[1];
+        if (words.size() > 1) words[1] = group + ":" + words[1];
     }
     const std::string cmd = words.size() > 1 ? words[1] : "";
     const std::string partial = (cword >= 0 && static_cast<size_t>(cword) < words.size())

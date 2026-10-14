@@ -52,7 +52,7 @@ def main():
         nowhere = f"127.0.0.1:{udp_port()}"
         for env in (lenv, fenv):
             assert run(dict(env, SPL_LAN_TARGETS=nowhere), "start").returncode == 0
-        assert run(fenv, "register", "theleader", "echo", "ECHO").returncode == 0
+        assert run(fenv, "pipe", "register", "theleader", "echo", "ECHO").returncode == 0
         assert run(lenv, "ping", "thefollower").returncode != 0, "reachable with no way to find it?"
         for env in (lenv, fenv):
             assert run(env, "stop").returncode == 0
@@ -84,7 +84,7 @@ def main():
             assert r.returncode == 0, r.stdout + r.stderr
 
         # data flows end to end with no relay anywhere
-        p = subprocess.Popen([SPL, "open", "thefollower", "echo", *A], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "echo", *A], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         p.stdin.write("no server needed\n")
         p.stdin.flush()

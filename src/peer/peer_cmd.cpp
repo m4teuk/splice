@@ -12,11 +12,13 @@
 #include "common/base64.h"
 #include "common/config.h"
 #include "common/log.h"
+#include "peer/commands.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
 #include "peer/help.h"
 #include "peer/pairing.h"
 #include "peer/pathman.h"
+#include "peer/pipes.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -117,6 +119,14 @@ int do_pipe_verb(int argc, char** argv, const std::string& line) {
         ::close(fd);
         return 1;
     }
+    if (line.rfind("OPEN ", 0) == 0) {  // an OPEN connects first; a REGISTER just listens
+        std::string kind;
+        if (!await_ready(fd, &kind, &err)) {
+            spl::logf("spl: %s", err.c_str());
+            ::close(fd);
+            return 1;
+        }
+    }
     clog("connected; bridging stdin/stdout (^D to end)");
     int rc = bridge_stdio(fd);
     ::close(fd);
@@ -166,11 +176,91 @@ int do_list_remote(int argc, char** argv, const std::string& peer) {
         std::printf("%s offers no pipes (or is unreachable).\n", peer.c_str());
         return 0;
     }
-    std::printf("%s offers:\n", peer.c_str());
+    // One "<name>\t<kind>" line per offer (an older peer sends just the name).
+    struct Row { std::string name, label, use; };
+    std::vector<Row> rows;
+    size_t w0 = 0, w1 = 0;
     std::string line;
     std::istringstream is(body);
-    while (std::getline(is, line))
-        if (!line.empty()) std::printf("  %s\n", line.c_str());
+    while (std::getline(is, line)) {
+        if (line.empty()) continue;
+        const size_t tab = line.find('\t');
+        // Both come from the peer: never let them drive our terminal.
+        const std::string name = printable(line.substr(0, tab));
+        const std::string kind = printable(tab == std::string::npos ? "" : line.substr(tab + 1));
+        rows.push_back({name, kind_label(kind), kind_usage(kind, peer, name)});
+        w0 = std::max(w0, name.size());
+        w1 = std::max(w1, rows.back().label.size());
+    }
+    std::printf("%s offers you:\n", peer.c_str());
+    for (const auto& r : rows)
+        std::printf("  %-*s  %-*s  %s\n", static_cast<int>(w0), r.name.c_str(),
+                    static_cast<int>(w1), r.label.c_str(), r.use.c_str());
+    return 0;
+}
+
+// The peers we offer `name` to: stored offers, plus live PIPE ones a running
+// daemon holds (never starts one just to ask).
+std::vector<std::string> peers_offered(const std::string& name) {
+    std::vector<std::string> out;
+    auto add = [&](const std::string& p) {
+        if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
+    };
+    if (auto store = Store::open(nullptr))
+        for (const auto& peer : store->list())
+            for (const auto& r : store->list_pipes(peer))
+                if (r.name == name) add(peer);
+    if (int fd = daemon_connect(); fd >= 0) {
+        if (ok_reply(send_command(fd, "STATUS RAW"))) {
+            std::istringstream is(read_to_eof(fd));
+            std::string line;
+            while (std::getline(is, line)) {  // reg\t<peer>\t<name>\t<type>
+                std::vector<std::string> f;
+                std::istringstream ls(line);
+                for (std::string x; std::getline(ls, x, '\t');) f.push_back(x);
+                if (f.size() >= 3 && f[0] == "reg" && f[2] == name) add(f[1]);
+            }
+        }
+        ::close(fd);
+    }
+    return out;
+}
+
+// `spl drop [<peer>] <name>`: stop offering something. The peer can be left
+// out when only one peer is offered that name.
+int do_drop(int argc, char** argv) {
+    const auto a = plain_args(argc, argv);
+    if (a.empty() || a.size() > 2) return usage_error("drop");
+    const std::string name = a.back();
+    std::string peer = a.size() == 2 ? a[0] : "";
+    if (peer.empty()) {
+        const auto peers = peers_offered(name);
+        if (peers.empty()) {
+            spl::logf("spl drop: you don't offer anything called '%s' (see: spl status)",
+                      name.c_str());
+            return 1;
+        }
+        if (peers.size() > 1) {
+            std::string list;
+            for (const auto& p : peers) list += (list.empty() ? "" : ", ") + p;
+            spl::logf("spl drop: '%s' is offered to %s; say which: spl drop <peer> %s",
+                      name.c_str(), list.c_str(), name.c_str());
+            return 1;
+        }
+        peer = peers[0];
+    }
+    std::string err;
+    if (!ensure_daemon(daemon_opts_from(argc, argv), &err)) {
+        spl::logf("spl drop: %s", err.c_str());
+        return 1;
+    }
+    const std::string r = daemon_request("UNREGISTER " + ctl_encode(peer) + " " + ctl_encode(name));
+    if (!ok_reply(r)) {
+        daemon_fail("spl drop", r);
+        return 1;
+    }
+    std::printf("no longer offering '%s' to %s\n", name.c_str(), peer.c_str());
+    if (r.size() > 3) std::printf("%s\n", r.substr(3).c_str());  // live connections carry on
     return 0;
 }
 
@@ -460,6 +550,7 @@ int peer_cmd_main(int argc, char** argv) {
         return 0;
     }
     if (sub == "config") return do_config();
+    if (sub == "drop") return do_drop(argc, argv);
     if (sub == "ping") {
         const auto a = plain_args(argc, argv);
         if (a.size() != 1) {
@@ -471,20 +562,20 @@ int peer_cmd_main(int argc, char** argv) {
     const auto a = plain_args(argc, argv);
     if (sub == "register") {
         if (a.size() < 3) {
-            return usage_error(sub);
+            return usage_error("pipe " + sub);
         }
         const std::string line = "REGISTER " + join(a, 0);
         return a[2] == "PIPE" ? do_pipe_verb(argc, argv, line) : do_verb(argc, argv, line);
     }
     if (sub == "unregister") {
         if (a.size() != 2) {
-            return usage_error(sub);
+            return usage_error("pipe " + sub);
         }
         return do_verb(argc, argv, "UNREGISTER " + join(a, 0));
     }
     if (sub == "open") {
         if (a.size() < 2) {
-            return usage_error(sub);
+            return usage_error("pipe " + sub);
         }
         const std::string wait = has_flag(argc, argv, "--wait") ? " WAIT" : "";
         if (a.size() == 2)  // default local end: this process via PIPE
@@ -495,7 +586,7 @@ int peer_cmd_main(int argc, char** argv) {
     }
     if (sub == "close") {
         if (a.size() != 2) {
-            return usage_error(sub);
+            return usage_error("pipe " + sub);
         }
         return do_verb(argc, argv, "CLOSE " + join(a, 0));
     }
@@ -546,6 +637,19 @@ int peer_group_main(int argc, char** argv) {
         return do_address(argv[2], argv[3], sub == "add-address");
     }
     return usage_error("peer", "unknown command '" + sub + "'");
+}
+
+// `spl pipe <sub> …`: the raw plumbing (register/unregister/open/close). Same
+// handlers as before they moved here; argv already has the subcommand at [1].
+int pipe_group_main(int argc, char** argv) {
+    if (argc < 2) {  // the group alone: show what's in it
+        print_help("pipe");
+        return 2;
+    }
+    const std::string sub = argv[1];
+    for (const auto& c : kPipeSubcommands)
+        if (c == sub) return peer_cmd_main(argc, argv);
+    return usage_error("pipe", "unknown command '" + sub + "'");
 }
 
 }  // namespace spl::peer

@@ -162,6 +162,7 @@ int serve_main(int argc, char** argv) {
     }
     std::printf("serving '%s' to %s as '%s'\n", path.c_str(), peer.c_str(), name.c_str());
     std::printf("  the peer fetches it with:  spl get <you> %s\n", name.c_str());
+    std::printf("  stop offering it:          spl drop %s %s\n", peer.c_str(), name.c_str());
     return 0;
 }
 
@@ -224,6 +225,7 @@ int inbox_main(int argc, char** argv) {
     else
         std::printf("inbox '%s' open: %s can `spl send <you> <path> --name %s` into %s\n",
                     name.c_str(), peer.c_str(), name.c_str(), dir.c_str());
+    std::printf("  close it:  spl drop %s %s\n", peer.c_str(), name.c_str());
     return 0;
 }
 

@@ -62,7 +62,7 @@ int chat_main(int argc, char** argv) {
     // closes the host's socket too, and both `spl chat` processes exit. The
     // follower WAITs so it can start before the host is registered.
     const std::string verb = leader ? "REGISTER " + ctl_encode(name) + " chat LIMIT 1 PIPE"
-                                    : "OPEN " + ctl_encode(name) + " chat WAIT PIPE";
+                                    : "OPEN " + ctl_encode(name) + " chat WAIT EXPECT raw PIPE";
     clog("%s chat with %s...", leader ? "hosting" : "joining", name.c_str());
     const std::string r = send_command(fd, verb);
     if (!ok_reply(r)) {
@@ -73,6 +73,11 @@ int chat_main(int argc, char** argv) {
     clog(leader ? "hosting; waiting for %s (^D to end)" : "waiting for %s (^D to end)",
          name.c_str());
 
+    if (!leader && !await_ready(fd, nullptr, &err)) {  // the host's chat answered (or not)
+        spl::logf("spl chat: %s", err.c_str());
+        ::close(fd);
+        return 1;
+    }
     const int rc = bridge_stdio(fd, /*exit_on_stdin_eof=*/true);
     ::close(fd);
     clog("chat closed");

@@ -6,5 +6,6 @@ namespace spl::peer {
 
 int peer_cmd_main(int argc, char** argv);  // argv[0] == "spl", argv[1] == subcommand
 int peer_group_main(int argc, char** argv);  // argv[0] == "peer", argv[1] == its subcommand
+int pipe_group_main(int argc, char** argv);  // argv[0] == "pipe", argv[1] == its subcommand
 
 }  // namespace spl::peer

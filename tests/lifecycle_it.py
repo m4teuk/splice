@@ -74,13 +74,13 @@ def main():
         assert subprocess.run([SPL, "start", *largs], env=envp, capture_output=True).returncode == 0
         time.sleep(1.0)
         assert not port_taken(lan), "an idle daemon must not hold the discovery port open"
-        assert subprocess.run([SPL, "register", "theleader", "idleprobe", "ECHO", *largs], env=envp,
+        assert subprocess.run([SPL, "pipe", "register", "theleader", "idleprobe", "ECHO", *largs], env=envp,
                               capture_output=True).returncode == 0
         deadline = time.time() + 5
         while time.time() < deadline and not port_taken(lan):
             time.sleep(0.1)
         assert port_taken(lan), "the discovery port should open once a peer is active"
-        subprocess.run([SPL, "unregister", "theleader", "idleprobe", *largs], env=envp,
+        subprocess.run([SPL, "pipe", "unregister", "theleader", "idleprobe", *largs], env=envp,
                        capture_output=True)
         subprocess.run([SPL, "stop"], env=envp, capture_output=True)
         print("  discovery port is closed while idle, open while a peer is active")
@@ -118,7 +118,7 @@ def main():
         time.sleep(4)
         assert running(run3), "a daemon with a registration must stay up even if non-sticky"
         # remove the registration -> now idle -> auto-stops
-        subprocess.run([SPL, "unregister", "theleader", "f", *largs], env=env3,
+        subprocess.run([SPL, "pipe", "unregister", "theleader", "f", *largs], env=env3,
                        capture_output=True, timeout=15)
         assert wait_gone(run3, 10), "daemon did not auto-stop after its registration was removed"
         print("  a registration keeps it alive; removing it lets it stop")

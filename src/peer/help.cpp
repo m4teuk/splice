@@ -23,7 +23,7 @@ struct Page {
 
 // The overview lists the groups in this order.
 constexpr const char* kGroups[] = {
-    "pairing", "files", "shells and chat", "what's going on", "the daemon", "plumbing", "other",
+    "pairing", "files", "shells and chat", "what's going on", "the daemon", "other",
 };
 
 constexpr Page kPages[] = {
@@ -134,7 +134,7 @@ constexpr Page kPages[] = {
      "spl serve <peer> <path> [--name NAME] [--limit N]",
      "Offers <path> to <peer>, who fetches it with `spl get`. A directory is sent\n"
      "whole, with everything under it. The offer stays (across restarts too)\n"
-     "until you remove it with `spl unregister <peer> <name>`; the files are read\n"
+     "until you stop it with `spl drop <peer> <name>`; the files are read\n"
      "when the peer fetches them, not now.\n"
      "\n"
      "options:\n"
@@ -172,7 +172,7 @@ constexpr Page kPages[] = {
     {"inbox", "files", "let a peer push files into a directory",
      "spl inbox <peer> <dir> [--name NAME] [--limit N] [-f]",
      "Lets <peer> send you files with `spl send`; they land in <dir> (created if\n"
-     "needed). Like any offer it stays until `spl unregister <peer> <name>`.\n"
+     "needed). Like any offer it stays until `spl drop <peer> <name>`.\n"
      "\n"
      "options:\n"
      "  --name NAME   offer it under another name, to have several inboxes for one\n"
@@ -217,8 +217,8 @@ constexpr Page kPages[] = {
      "Offers <peer> a shell on this machine, running as you: they can then run\n"
      "anything you can. They attach with `spl shell <you>`; each attach gets a\n"
      "fresh shell. The offer stays (across restarts too) until you remove it with\n"
-     "`spl unregister <peer> <name>`. Shells already open keep running after that;\n"
-     "end one with `spl close`.\n"
+     "`spl drop <peer> <name>`. Shells already open keep running after that;\n"
+     "end one with `spl pipe close`.\n"
      "\n"
      "options:\n"
      "  --name NAME   offer it under another name (default: shell)\n"
@@ -244,15 +244,16 @@ constexpr Page kPages[] = {
      "spl status [-v]",
      "For each peer: whether it's reached directly or through the relay and how\n"
      "fast, its settings, what you offer it, and every open connection with its\n"
-     "progress. The numbers after `#` are what `spl close` takes.\n"
+     "progress. The numbers after `#` are what `spl pipe close` takes.\n"
      "\n"
      "options:\n"
      "  -v, --verbose   also addresses, traffic per path, and every address tried"},
 
     {"ls", "what's going on", "what a peer offers you",
      "spl ls <peer>",
-     "Asks <peer> what it offers you right now (the names you pass to `spl get`,\n"
-     "`spl shell --name`, …). The peer has to be reachable.\n"
+     "Asks <peer> what it offers you right now: each name, what it is (sends\n"
+     "files, receives files, a shell, …) and the command that uses it. The peer\n"
+     "has to be reachable.\n"
      "\n"
      "options:\n"
      RELAY_OPT
@@ -266,6 +267,18 @@ constexpr Page kPages[] = {
      "\n"
      "options:\n"
      RELAY_OPT},
+
+    {"drop", "what's going on", "stop offering something to a peer",
+     "spl drop [<peer>] <name>",
+     "Stops offering <name>: a file you serve, an inbox, a shell. Leave out <peer>\n"
+     "when only one peer is offered that name. Connections already open carry on\n"
+     "(it tells you which); end them with `spl pipe close`.\n"
+     "\n"
+     "examples:\n"
+     "  spl drop report.pdf\n"
+     "  spl drop desk inbox\n"
+     "\n"
+     "see also: spl status (what you offer), spl reset (stop offering everything)"},
 
     // ------------------------------------------------------------ the daemon
     {"start", "the daemon", "run the daemon and keep it running",
@@ -294,7 +307,7 @@ constexpr Page kPages[] = {
      "spl reset",
      "Removes everything you offer, to every peer, and closes the connections\n"
      "made to those offers. Your pairings are kept. To remove one offer use\n"
-     "`spl unregister <peer> <name>`."},
+     "`spl drop`."},
 
     {"config", "the daemon", "show the config file and its values",
      "spl config",
@@ -303,8 +316,18 @@ constexpr Page kPages[] = {
      "file by hand to change them; restart the daemon (`spl stop`) to apply."},
 
     // ------------------------------------------------------------ plumbing
-    {"register", "plumbing", "offer a raw pipe of any type",
-     "spl register <peer> <name> [LIMIT N] <TYPE> [args...]",
+    {"pipe", "other", "raw pipes: what every other command is built on",
+     "spl pipe <command> [args]",
+     "commands:\n"
+     "  register <peer> <name> [LIMIT N] <TYPE> [args...]   offer a pipe\n"
+     "  unregister <peer> <name>                         stop offering it\n"
+     "  open [--wait] <peer> <name> [<TYPE> [args...]]   connect to an offer\n"
+     "  close <peer> <id>                                end one connection\n"
+     "\n"
+     "`spl help pipe <command>` describes each one, and docs/PIPES.md the model."},
+
+    {"pipe register", "", "offer a raw pipe of any type",
+     "spl pipe register <peer> <name> [LIMIT N] <TYPE> [args...]",
      "The general form of serve/inbox/revshell: offer <name> to <peer>, with this\n"
      "machine's end of each connection made by <TYPE>.\n"
      "\n"
@@ -319,32 +342,34 @@ constexpr Page kPages[] = {
      "LIMIT N removes the offer after N connections.\n"
      "\n"
      "example:\n"
-     "  spl register desk diagnostic ECHO\n"
+     "  spl pipe register desk diagnostic ECHO\n"
      "\n"
-     "see also: spl open, spl unregister"},
+     "see also: spl pipe open, spl drop"},
 
-    {"unregister", "plumbing", "remove one offer",
-     "spl unregister <peer> <name>",
-     "Stops offering <name> to <peer>. Connections already made to it keep\n"
-     "running (it tells you which); end them with `spl close`."},
+    {"pipe unregister", "", "stop offering a pipe",
+     "spl pipe unregister <peer> <name>",
+     "Stops offering <name> to <peer> (the same as `spl drop <peer> <name>`).\n"
+     "Connections already made to it keep running (it tells you which); end them\n"
+     "with `spl pipe close`."},
 
-    {"open", "plumbing", "connect to a peer's offer with a raw pipe",
-     "spl open [--wait] <peer> <name> [<TYPE> [args...]]",
+    {"pipe open", "", "connect to a peer's offer with a raw pipe",
+     "spl pipe open [--wait] <peer> <name> [<TYPE> [args...]]",
      "Connects to what <peer> offers as <name>, with this machine's end made by\n"
-     "<TYPE> (see `spl help register`). Without a TYPE it's PIPE: stdin and stdout\n"
-     "become the connection.\n"
+     "<TYPE> (see `spl help pipe register`). Without a TYPE it's PIPE: stdin and\n"
+     "stdout become the connection. A TYPE that needs a particular kind of offer\n"
+     "(GET_FILE needs one that sends files) refuses anything else.\n"
      "\n"
      "options:\n"
      "  --wait   if <name> isn't offered yet, keep trying until it is\n"
      RELAY_OPT
      "\n"
      "example:\n"
-     "  echo hello | spl open desk diagnostic\n"
+     "  echo hello | spl pipe open desk diagnostic\n"
      "\n"
-     "see also: spl register, spl close"},
+     "see also: spl pipe register, spl pipe close"},
 
-    {"close", "plumbing", "end one open connection",
-     "spl close <peer> <id>",
+    {"pipe close", "", "end one open connection",
+     "spl pipe close <peer> <id>",
      "Ends the connection with this id (the `#` number in `spl status`), whether\n"
      "you opened it or the peer connected to your offer. The offer stays."},
 
@@ -442,20 +467,21 @@ bool print_help(const std::string& topic) {
 std::optional<std::string> help_request(int argc, char** argv) {
     if (argc < 3) return std::nullopt;
     const std::string cmd = argv[1];
-    if (cmd == "peer") {
-        if (is_help_flag(argv[2])) return std::string("peer");
-        for (int i = 3; i < argc && std::string_view(argv[i]) != "--"; ++i)
-            if (is_help_flag(argv[i])) {
-                const std::string sub = "peer " + std::string(argv[2]);
-                return find(sub) ? std::string(find(sub)->topic) : std::string("peer");
-            }
+    if (cmd == "peer" || cmd == "pipe") {  // a group: its page, or a subcommand's
+        if (is_help_flag(argv[2])) return cmd;
+        const std::string sub = cmd + " " + argv[2];
+        const bool typed = sub == "pipe register" || sub == "pipe open";
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view a = argv[i];
+            if (a == "--" || (typed && is_type_word(a))) break;
+            if (is_help_flag(a)) return find(sub) ? std::string(find(sub)->topic) : cmd;
+        }
         return std::nullopt;
     }
     if (!find(cmd)) return std::nullopt;  // unknown command: main reports it
-    const bool typed = cmd == "register" || cmd == "open";
     for (int i = 2; i < argc; ++i) {
         const std::string_view a = argv[i];
-        if (a == "--" || (typed && is_type_word(a))) break;
+        if (a == "--") break;
         if (is_help_flag(a)) return cmd;
     }
     return std::nullopt;

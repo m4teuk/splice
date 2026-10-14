@@ -135,6 +135,29 @@ class GetFileEnd : public LocalEnd {
     std::string err_;
 };
 
+// --- kinds --------------------------------------------------------------
+// A kind says what an offer is, from the offering side: "<protocol>/<version>"
+// plus words about this end ("file/1 send", "file/1 recv", "shell/1 pty", "raw").
+// The offering daemon announces it in the handshake reply ("OK <kind>"), so the
+// opener knows what it reached without trusting anything said later in-band.
+// An older peer announces nothing (""): treated as unknown, not as a mismatch.
+
+// The kind an offer of `type` announces.
+std::string offer_kind(const std::string& type);
+// The kind a local end of `type` needs the other side to be ("" = anything).
+std::string local_expects(const std::string& type);
+// Does `remote` satisfy `expect`? Same protocol, and every word of `expect`
+// present in `remote`. An empty side (unknown / anything) always matches.
+bool kind_matches(const std::string& remote, const std::string& expect);
+// For people: what an offer of this kind does ("sends files"), and the command
+// that uses it ("spl get desk report.pdf").
+std::string kind_label(const std::string& kind);
+std::string kind_usage(const std::string& kind, const std::string& peer, const std::string& name);
+
+// Text a peer sent us, made safe to print: anything outside printable ASCII
+// (terminal escape sequences included) becomes '?'.
+std::string printable(const std::string& s);
+
 // Factory for daemon-owned types ("ECHO", "SHARE_FILE", "GET_FILE").
 // Returns null with *err set for unknown types/bad args (REGISTER also uses
 // this as validation, e.g. an unreadable SHARE_FILE path fails here).

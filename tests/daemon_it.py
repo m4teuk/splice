@@ -57,11 +57,11 @@ def main():
         assert "OFFERED" not in out, f"unexpected listening pipes:\n{out}"
 
         # register an ECHO on the follower; the leader echoes through it
-        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
+        r = spl(fenv, "pipe", "register", "theleader", "echo2", "ECHO")
         assert r.returncode == 0, r.stdout
         out = wait_status(fenv, "echo2")
         p = subprocess.Popen(
-            [SPL, "open", "thefollower", "echo2"],
+            [SPL, "pipe", "open", "thefollower", "echo2"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         p.stdin.write("hello pipes\n")
@@ -73,7 +73,7 @@ def main():
         print("  ECHO pipe round-trip OK")
 
         # collision is refused
-        r = spl(fenv, "register", "theleader", "echo2", "ECHO")
+        r = spl(fenv, "pipe", "register", "theleader", "echo2", "ECHO")
         assert r.returncode != 0, "duplicate register accepted"
         print("  duplicate registration refused")
 
@@ -85,7 +85,7 @@ def main():
 
         # leader can use it
         p = subprocess.Popen(
-            [SPL, "open", "thefollower", "echo2"],
+            [SPL, "pipe", "open", "thefollower", "echo2"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         p.stdin.write("ping2\n")
@@ -97,7 +97,7 @@ def main():
 
         # unknown pipe -> client sees EOF quickly (UNKNOWN closes the conn)
         p = subprocess.Popen(
-            [SPL, "open", "thefollower", "nosuchpipe"],
+            [SPL, "pipe", "open", "thefollower", "nosuchpipe"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lenv,
         )
         assert p.stdout.read() == "", "unknown pipe produced data"
@@ -105,9 +105,9 @@ def main():
         print("  unknown pipe rejected")
 
         # LIMIT on a daemon-owned reg: a LIMIT-1 ECHO serves once, then retires.
-        assert spl(fenv, "register", "theleader", "once", "LIMIT", "1", "ECHO").returncode == 0
+        assert spl(fenv, "pipe", "register", "theleader", "once", "LIMIT", "1", "ECHO").returncode == 0
         wait_status(fenv, "once")
-        p = subprocess.Popen([SPL, "open", "thefollower", "once"], env=lenv,
+        p = subprocess.Popen([SPL, "pipe", "open", "thefollower", "once"], env=lenv,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         p.stdin.write("a\n"); p.stdin.flush()
         assert p.stdout.readline() == "a\n"

@@ -121,6 +121,7 @@ int main(int argc, char** argv) {
     if (cmd == "shell") return spl::peer::shell_main(argc - 1, argv + 1);
     if (cmd == "update") return argc == 2 ? cmd_update() : spl::peer::usage_error("update");
     if (cmd == "peer") return spl::peer::peer_group_main(argc - 1, argv + 1);
+    if (cmd == "pipe") return spl::peer::pipe_group_main(argc - 1, argv + 1);
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
     // The daemon / pipe plumbing commands (start, stop, status, ls, register,
@@ -131,6 +132,13 @@ int main(int argc, char** argv) {
     if (cmd == "rename" || cmd == "remove" || cmd == "rm" || cmd == "list") {
         std::fprintf(stderr, "spl: managing peers is under `spl peer` — try: spl peer %s\n",
                      cmd == "list" ? "ls" : cmd == "rm" ? "remove" : std::string(cmd).c_str());
+        return 2;
+    }
+    // …and the raw pipe verbs under `spl pipe`.
+    if (cmd == "register" || cmd == "unregister" || cmd == "open" || cmd == "close") {
+        std::fprintf(stderr, "spl: the raw pipe commands are under `spl pipe` — try: spl pipe %s%s\n",
+                     std::string(cmd).c_str(),
+                     cmd == "unregister" ? "\n  (to stop offering something: spl drop)" : "");
         return 2;
     }
     std::fprintf(stderr, "spl: unknown command '%.*s' (see: spl help)\n",

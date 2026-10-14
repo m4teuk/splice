@@ -54,10 +54,10 @@ def echo(run_dir, peer, payload, timeout=20):
     s.connect(os.path.join(run_dir, "daemon.sock"))
     s.sendall(f"OPEN {peer} echo PIPE\n".encode())
     buf = b""
-    while b"\n" not in buf:
+    while buf.count(b"\n") < 2:  # "OK <id>", then "READY <kind>" once connected
         buf += s.recv(4096)
-    assert buf.split(b"\n", 1)[0].startswith(b"OK"), buf
-    rest = buf.split(b"\n", 1)[1]
+    ok, ready, rest = buf.split(b"\n", 2)
+    assert ok.startswith(b"OK") and ready == b"READY raw", buf
     s.sendall(payload)
     got = rest
     deadline = time.time() + timeout
