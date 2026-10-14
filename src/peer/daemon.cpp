@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <deque>
 #include <ctime>
 #include <atomic>
 #include <cerrno>
@@ -235,6 +236,21 @@ struct Session {
     std::vector<uint64_t> want_retire;
 };
 
+// Output queued for one client socket, in arrival order across the instances
+// that share it (several inbound connections on one PIPE registration).
+struct ClientOut {
+    struct Chunk {
+        Session* s;  // null once the session is gone (nothing to account to)
+        uint64_t id;
+        std::string data;
+        bool accounted;
+    };
+    std::deque<Chunk> q;
+    size_t off = 0;              // written of q.front()
+    bool closing = false;        // close the fd once drained
+    Millis give_up_at = 0;       // …or at this time, drained or not
+};
+
 class Daemon {
  public:
     explicit Daemon(DaemonOpts opts) : opts_(std::move(opts)) {}
@@ -255,9 +271,24 @@ class Daemon {
     void fail_open(Session& s, Instance& in, const std::string& why);
     void add_reg(Session& s, const std::string& name, Reg reg);
     void release_owner_fd(Session& s, int fd);  // close a PIPE owner socket nobody uses
+    // A PIPE registration's owner socket: its bytes go to every open instance on
+    // it, read only while there is one and all have room (else they wait in the
+    // socket, and the owner process is held back), resumed by resume_owners().
+    void watch_owner(Session* sp, const std::string& name, uint64_t serial, int fd);
+    void on_owner_readable(Session* sp, const std::string& name, uint64_t serial, int fd);
+    void resume_owners();
     void watch_cfd(Session& s, Instance& in);
     // Make the poller watch exactly what the instance's LocalEnd asks for now.
     void sync_watches(Session& s, Instance& in);
+    // Writing to client sockets (PIPE): queued and flushed as the client reads,
+    // never blocking the daemon. Tunnel bytes count as consumed (reopening the
+    // sender's window) only once written, so a client that stops reading holds
+    // its sender back. `accounted` = the bytes came from the tunnel.
+    void client_write(Session& s, Instance& in, ByteSpan b, bool accounted);
+    void flush_client(int fd);
+    // `fd` is done: close it once its queue has drained (or after a timeout).
+    void close_client(int fd);
+    void account(Session& s, uint64_t id, size_t n);  // n tunnel bytes consumed
     // Remove a registration (live instances keep running); returns their ids.
     std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
@@ -295,6 +326,13 @@ class Daemon {
     HintResolver hints_;
     Timer t_hints_, t_remember_;
     std::map<std::string, Session> sessions_;
+    std::map<int, ClientOut> client_out_;  // client sockets with output pending
+    struct PausedOwner {
+        Session* s;
+        std::string name;
+        uint64_t serial;
+    };
+    std::map<int, PausedOwner> paused_owners_;  // owner sockets not being read right now
     std::map<int, std::string> ctl_;  // control conns mid-command: fd -> line buffer
 };
 
@@ -391,6 +429,7 @@ void Daemon::bind_end(Session& s, Instance& in) {
     Session* sp = &s;
     const uint64_t id = in.id;
     if (in.cfd >= 0) {
+        in.conn->hold_recv(true);  // bytes count once the client has read them
         // Only pump fds we own (OPEN-PIPE). An inbound PIPE instance shares the
         // registration owner's fd, whose one and only reader is the broadcast
         // callback installed at REGISTER — never watch it per-instance.
@@ -541,7 +580,7 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
                       in.want.c_str(), in.kind.empty() ? "kind unknown" : in.kind.c_str());
             // A client socket (PIPE) learns it's connected, and to what, before
             // the first byte of the stream.
-            if (in.cfd >= 0) write_str(in.cfd, "READY " + in.kind + "\n");
+            if (in.cfd >= 0) client_write(s, in, as_span("READY " + in.kind + "\n"), false);
             bind_end(s, in);
         }
         if (!rest.empty()) {
@@ -556,7 +595,7 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
         in.local->on_tunnel_data(b);
         sync_watches(s, in);
     } else if (in.cfd >= 0) {
-        spl::write_all(in.cfd, b.data(), b.size());
+        client_write(s, in, b, true);
     }
 }
 
@@ -631,6 +670,7 @@ void Daemon::watch_cfd(Session& s, Instance& in) {
         }
         uint8_t buf[kChunk];
         ssize_t n = ::read(in.cfd, buf, sizeof(buf));
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
         if (n <= 0) {  // client went away -> the pipe dies
             close_instance(*sp, id, true);
             return;
@@ -643,7 +683,7 @@ void Daemon::sync_watches(Session& s, Instance& in) {
     std::vector<LocalEnd::Watch> want;
     if (in.open && in.local) want = in.local->watches();
     for (const auto& w : in.watching)
-        if (std::find(want.begin(), want.end(), w) == want.end()) poller_.remove(w.fd);
+        if (std::find(want.begin(), want.end(), w) == want.end()) poller_.remove(w.fd, w.write);
     Session* sp = &s;
     const uint64_t id = in.id;
     for (const auto& w : want) {
@@ -668,10 +708,10 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
     if (it == s.insts.end()) return;
     Instance& in = *it->second;
     if (in.cfd >= 0 && in.cfd_owned) {  // a shared (owner) fd is the registration's
-        if (in.cfd_watch) poller_.remove(in.cfd);
-        ::close(in.cfd);
+        if (in.cfd_watch) poller_.remove(in.cfd, false);
+        close_client(in.cfd);  // after what's queued for it reaches the client
     }
-    for (const auto& w : in.watching) poller_.remove(w.fd);  // before the end closes them
+    for (const auto& w : in.watching) poller_.remove(w.fd, w.write);  // before the end closes them
     in.watching.clear();
     if (in.conn) {
         in.conn->on_recv = nullptr;
@@ -723,8 +763,78 @@ void Daemon::fail_open(Session& s, Instance& in, const std::string& why) {
         ::close(in.follow_fd);
         in.follow_fd = -1;
     }
-    if (in.cfd >= 0 && in.cfd_owned) write_str(in.cfd, "ERR " + why + "\n");  // a PIPE client
+    if (in.cfd >= 0 && in.cfd_owned) client_write(s, in, as_span("ERR " + why + "\n"), false);
     close_instance(s, in.id, false);
+}
+
+void Daemon::account(Session& s, uint64_t id, size_t n) {
+    auto it = s.insts.find(id);
+    if (it == s.insts.end()) return;  // gone: its window went with it
+    Instance& in = *it->second;
+    const size_t pre = std::min(n, in.preacked);  // arrived with the handshake, acked already
+    in.preacked -= pre;
+    if (in.conn && n > pre) in.conn->recved(n - pre);
+}
+
+void Daemon::client_write(Session& s, Instance& in, ByteSpan b, bool accounted) {
+    if (in.cfd < 0 || b.empty()) return;
+    ClientOut& o = client_out_[in.cfd];
+    if (o.closing) {  // the client is on its way out: nobody will read this
+        if (accounted) account(s, in.id, b.size());
+        return;
+    }
+    o.q.push_back({&s, in.id, std::string(reinterpret_cast<const char*>(b.data()), b.size()),
+                   accounted});
+    flush_client(in.cfd);
+}
+
+void Daemon::flush_client(int fd) {
+    auto it = client_out_.find(fd);
+    if (it == client_out_.end()) return;
+    ClientOut& o = it->second;
+    bool dead = false;
+    while (!o.q.empty()) {
+        ClientOut::Chunk& c = o.q.front();
+        const ssize_t w = ::write(fd, c.data.data() + o.off, c.data.size() - o.off);
+        if (w > 0) {
+            if (c.s && c.accounted) account(*c.s, c.id, static_cast<size_t>(w));
+            o.off += static_cast<size_t>(w);
+            if (o.off == c.data.size()) {
+                o.q.pop_front();
+                o.off = 0;
+            }
+            continue;
+        }
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            poller_.set(fd, [this, fd] { flush_client(fd); }, /*writable=*/true);  // when it reads
+            return;
+        }
+        dead = true;  // the client is gone; its read side reports that
+        break;
+    }
+    if (dead)  // what it will never read still reopens the senders' windows
+        for (size_t i = 0; i < o.q.size(); ++i) {
+            const ClientOut::Chunk& c = o.q[i];
+            if (c.s && c.accounted) account(*c.s, c.id, c.data.size() - (i == 0 ? o.off : 0));
+        }
+    poller_.remove(fd, true);
+    const bool close_now = o.closing;
+    client_out_.erase(it);
+    if (close_now) ::close(fd);
+}
+
+void Daemon::close_client(int fd) {
+    paused_owners_.erase(fd);
+    auto it = client_out_.find(fd);
+    if (it == client_out_.end() || it->second.q.empty()) {  // nothing pending: close now
+        if (it != client_out_.end()) client_out_.erase(it);
+        poller_.remove(fd);
+        ::close(fd);
+        return;
+    }
+    poller_.remove(fd, false);  // no more reading; finish writing
+    it->second.closing = true;
+    it->second.give_up_at = mono_ms() + 30000;
 }
 
 void Daemon::add_reg(Session& s, const std::string& name, Reg reg) {
@@ -732,13 +842,74 @@ void Daemon::add_reg(Session& s, const std::string& name, Reg reg) {
     s.regs[name] = std::move(reg);
 }
 
+void Daemon::watch_owner(Session* sp, const std::string& name, uint64_t serial, int fd) {
+    paused_owners_.erase(fd);
+    poller_.set(fd, [this, sp, name, serial, fd] { on_owner_readable(sp, name, serial, fd); });
+}
+
+void Daemon::on_owner_readable(Session* sp, const std::string& name, uint64_t serial, int fd) {
+    // Nobody to give the bytes to, or someone without room: leave them in the
+    // socket (the owner blocks) instead of dropping or piling them up here.
+    bool any = false, room = true;
+    for (auto& [id, in] : sp->insts)
+        if (in->inbound && in->cfd == fd && in->open) {
+            any = true;
+            room = room && in->conn && in->conn->sndbuf() >= kChunk;
+        }
+    uint8_t buf[kChunk];
+    ssize_t n = 0;
+    if (any && room) {
+        n = ::read(fd, buf, sizeof(buf));
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+    } else {
+        // Still notice the owner going away: peek without consuming.
+        n = ::recv(fd, buf, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
+        if (n > 0) {  // data waiting, nowhere to put it: stop polling until there is
+            poller_.remove(fd, false);
+            paused_owners_[fd] = {sp, name, serial};
+            return;
+        }
+    }
+    if (n <= 0) {  // owner process went away -> its stream is gone
+        paused_owners_.erase(fd);
+        std::vector<uint64_t> users;
+        for (auto& [id, in] : sp->insts)
+            if (in->inbound && in->cfd == fd) users.push_back(id);
+        if (auto rit = sp->regs.find(name); rit != sp->regs.end() && rit->second.serial == serial)
+            unregister(*sp, name);
+        // The last of these closes (and unwatches) fd via release_owner_fd.
+        for (uint64_t id : users) close_instance(*sp, id, true);
+        return;
+    }
+    // (one instance for chat; interleaving with several is the user's choice)
+    for (auto& [id, in] : sp->insts)
+        if (in->inbound && in->cfd == fd && in->open)
+            route_to_tunnel(*sp, *in, ByteSpan(buf, static_cast<size_t>(n)));
+}
+
+void Daemon::resume_owners() {
+    for (auto it = paused_owners_.begin(); it != paused_owners_.end();) {
+        const int fd = it->first;
+        const PausedOwner po = it->second;
+        bool any = false, room = true;
+        for (auto& [id, in] : po.s->insts)
+            if (in->inbound && in->cfd == fd && in->open) {
+                any = true;
+                room = room && in->conn && in->conn->sndbuf() >= kChunk;
+            }
+        ++it;
+        if (any && room) watch_owner(po.s, po.name, po.serial, fd);  // erases its entry
+    }
+}
+
 void Daemon::release_owner_fd(Session& s, int fd) {
     for (const auto& [rname, reg] : s.regs)
         if (reg.owner_fd == fd) return;
     for (const auto& [id, in] : s.insts)
         if (in->cfd == fd) return;
-    poller_.remove(fd);
-    ::close(fd);
+    poller_.remove(fd, false);
+    close_client(fd);
 }
 
 // Remove a registration: stop offering it (and delete it from the store if it
@@ -771,10 +942,15 @@ void Daemon::drop_session(const std::string& name) {
     for (uint64_t id : ids) close_instance(s, id, false);
     for (auto& [rname, reg] : s.regs)
         if (reg.owner_fd >= 0) {
-            poller_.remove(reg.owner_fd);
-            ::close(reg.owner_fd);
+            poller_.remove(reg.owner_fd, false);
+            close_client(reg.owner_fd);
         }
     s.regs.clear();
+    for (auto& [fd, o] : client_out_)  // queued output outlives the session: unlink it
+        for (auto& c : o.q)
+            if (c.s == &s) c.s = nullptr;
+    for (auto pit = paused_owners_.begin(); pit != paused_owners_.end();)
+        pit = pit->second.s == &s ? paused_owners_.erase(pit) : std::next(pit);
     poller_.remove(s.pm->fd());
     sessions_.erase(it);
 }
@@ -969,6 +1145,17 @@ void Daemon::adopt_server() {
 
 void Daemon::tick(Millis now) {
     reap_orphans(now);  // programs whose connection went away before they ended
+    resume_owners();    // owner sockets paused for want of a connection with room
+    for (auto it = client_out_.begin(); it != client_out_.end();) {  // closing, never drained
+        if (it->second.closing && now >= it->second.give_up_at) {
+            const int fd = it->first;
+            poller_.remove(fd);
+            ::close(fd);
+            it = client_out_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     if (!server_.valid()) adopt_server();
     if (t_hints_.due(now, 500)) refresh_hints(now);
     if (t_remember_.due(now, 2000)) remember_paths(now);
@@ -1178,30 +1365,11 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             write_str(fd, "OK\n");
             poller_.remove(fd);
             ctl_.erase(fd);  // the connection now is the pipe's local end
+            net::set_nonblocking(fd, true);  // never let a slow client stall the daemon
             add_reg(*s, name, Reg{.type = "PIPE", .limit = limit, .owner_fd = fd});
             const uint64_t serial = s->regs[name].serial;
             Session* sp = s;
-            poller_.set(fd, [this, sp, name, serial, fd] {
-                // Bytes from the owner go to every live instance on this socket
-                // (one for chat; interleaving with several is the user's choice).
-                // Matched by fd, not name: they may outlive the registration.
-                uint8_t buf[kChunk];
-                ssize_t n = ::read(fd, buf, sizeof(buf));
-                if (n <= 0) {  // owner process went away -> its stream is gone
-                    std::vector<uint64_t> users;
-                    for (auto& [id, in] : sp->insts)
-                        if (in->inbound && in->cfd == fd) users.push_back(id);
-                    if (auto rit = sp->regs.find(name);
-                        rit != sp->regs.end() && rit->second.serial == serial)
-                        unregister(*sp, name);
-                    // The last of these closes (and unwatches) fd via release_owner_fd.
-                    for (uint64_t id : users) close_instance(*sp, id, true);
-                    return;
-                }
-                for (auto& [id, in] : sp->insts)
-                    if (in->inbound && in->cfd == fd && in->open)
-                        route_to_tunnel(*sp, *in, ByteSpan(buf, static_cast<size_t>(n)));
-            });
+            watch_owner(sp, name, serial, fd);
             return;
         }
         // Daemon-owned: validate, persist (with its limit), add to the table.
@@ -1278,6 +1446,7 @@ void Daemon::handle_cmd(int fd, const std::string& line) {
             write_str(fd, "OK " + std::to_string(in->id) + "\n");
             poller_.remove(fd);
             ctl_.erase(fd);  // fd now belongs to the instance (watched once open)
+            net::set_nonblocking(fd, true);  // never let a slow client stall the daemon
         } else {
             std::string terr;
             in->local = make_local_end(t[ti], {t.begin() + ti + 1, t.end()}, &terr);
@@ -1541,6 +1710,11 @@ int Daemon::run() {
     last_busy_ = mono_ms();  // don't auto-stop before the first command arrives
     poller_.set(lfd_, [this] { accept_ctl(); });
     poller_.run(g_dstop, [this](Millis now) { tick(now); });
+
+    // Every connection ends with the daemon: programs still running are hung
+    // up as their instances go, then given a moment, then killed.
+    sessions_.clear();
+    stop_orphans(2000);
 
     ::close(lfd_);
     ::unlink(path.c_str());

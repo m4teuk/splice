@@ -53,4 +53,8 @@ bool exec_has_pty(const std::string& type, const std::vector<std::string>& args)
 // they linger, and reaped. The daemon calls this every tick.
 void reap_orphans(Millis now);
 
+// The daemon is exiting: give the programs it hung up up to `grace_ms` to end,
+// then SIGKILL whatever is left (one that ignores SIGHUP mustn't outlive it).
+void stop_orphans(Millis grace_ms);
+
 }  // namespace spl::peer

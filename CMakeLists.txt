@@ -241,6 +241,10 @@ if(SPL_BUILD_TESTS)
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)
 
+    add_test(NAME flow_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/flow_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(flow_integration PROPERTIES TIMEOUT 200)
+
     add_test(NAME exec_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/exec_it.py $<TARGET_FILE:spl>)
     set_tests_properties(exec_integration PROPERTIES TIMEOUT 300)

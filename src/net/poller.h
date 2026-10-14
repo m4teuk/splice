@@ -16,10 +16,11 @@ namespace spl::net {
 
 class Poller {
  public:
-    // Add or replace `fd`'s callback: called when it's readable (or, with
-    // `writable`, when it can be written), and on hangup/error either way.
+    // Add or replace `fd`'s callback for readability (or, with `writable`, for
+    // writability); it's also called on hangup/error. One fd may have both.
     void set(int fd, std::function<void()> on_ready, bool writable = false);
-    void remove(int fd);
+    void remove(int fd);                 // both callbacks
+    void remove(int fd, bool writable);  // just one
 
     // Poll until `stop` becomes true. Each round waits at most 100ms, invokes
     // the callbacks of readable fds, then on_tick(now).

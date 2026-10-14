@@ -417,4 +417,15 @@ void reap_orphans(Millis now) {
     }
 }
 
+void stop_orphans(Millis grace_ms) {
+    const Millis until = mono_ms() + grace_ms;
+    while (!orphans().empty() && mono_ms() < until) {
+        reap_orphans(mono_ms());
+        ::usleep(20 * 1000);
+    }
+    for (const auto& o : orphans()) signal_run(o.pid, SIGKILL);
+    for (const auto& o : orphans()) ::waitpid(o.pid, nullptr, 0);  // SIGKILL can't be ignored
+    orphans().clear();
+}
+
 }  // namespace spl::peer

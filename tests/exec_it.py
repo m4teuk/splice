@@ -74,6 +74,8 @@ def main():
         pidfile = os.path.join(work, "pid")
         expose("--name", "hang", "sh", "-c", f'echo $$ > {pidfile}; exec sleep 60')
         expose("--name", "tty", "--pty", "sh", "-c", "tty; exit 4")
+        # ignores the hang-up (and `exec sleep` keeps it ignored)
+        expose("--name", "stubborn", "sh", "-c", f'trap "" HUP; echo $$ > {pidfile}; exec sleep 60')
 
         # --- stdout and stderr apart; input ends, output continues; the status is ours
         r = spl(lenv, "run", "thefollower", "t", input=b"hello\n")
@@ -154,6 +156,30 @@ def main():
         assert wait_for(lambda: not alive(pid), 10), "program outlived its daemon"
         assert spl(fenv, "start").returncode == 0
         print("  a lost connection exits 255, and the program is stopped")
+
+        # --- one that ignores SIGHUP is killed all the same: 5 s after its client
+        # vanished, and at once when the daemon stops
+        def start_stubborn():
+            if os.path.exists(pidfile):
+                os.remove(pidfile)
+            p = subprocess.Popen([SPL, "run", "thefollower", "stubborn", *A], env=lenv,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            assert wait_for(lambda: os.path.exists(pidfile) and open(pidfile).read().strip(), 20)
+            return p, int(open(pidfile).read())
+
+        p, pid = start_stubborn()
+        p.kill()
+        p.wait()
+        time.sleep(2)
+        assert alive(pid), "SIGHUP was ignored, so it should still be in its grace period"
+        assert wait_for(lambda: not alive(pid), 10), "a program ignoring SIGHUP was never killed"
+        p, pid = start_stubborn()
+        assert spl(fenv, "stop").returncode == 0
+        p.communicate(timeout=30)
+        assert wait_for(lambda: not alive(pid), 10), "a program ignoring SIGHUP outlived the daemon"
+        assert spl(fenv, "start").returncode == 0
+        print("  a program ignoring SIGHUP is killed (after the grace, or on spl stop)")
 
         # --- a PTY offer: a terminal there; `run` works on it, status passes
         r = spl(lenv, "run", "thefollower", "tty", input=b"")
