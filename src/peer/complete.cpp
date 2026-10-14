@@ -202,6 +202,16 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
                 }
         return {};
     }
+    if (cmd == "help") {  // a command, then (for `peer`) one of its subcommands
+        if (idx == 0) return command_names();
+        if (idx == 1 && !pos.empty() && pos[0] == "peer") {
+            std::vector<std::string> subs;
+            for (const auto& c : kPeerSubcommands)
+                if (!c.alias) subs.emplace_back(c.name);
+            return subs;
+        }
+        return {};
+    }
     if (cmd == "unregister") return idx == 0 ? peer() : (idx == 1 ? my_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "close") return idx == 0 ? peer() : (idx == 1 ? instance_ids(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "register") {

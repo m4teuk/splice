@@ -27,6 +27,7 @@
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/help.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -247,6 +248,7 @@ struct ShOpts {
     std::string peer, name = "shell";
     uint32_t limit = 0;
     bool ok = true;
+    std::string bad;  // why parsing failed
 };
 ShOpts parse(const char* ctx, int argc, char** argv, bool allow_limit) {
     ShOpts o;
@@ -258,9 +260,9 @@ ShOpts parse(const char* ctx, int argc, char** argv, bool allow_limit) {
         else if (a == "--port") { if (auto v = val()) o.daemon.port = (uint16_t)std::atoi(v); }
         else if (a == "--name") { if (auto v = val()) o.name = v; }
         else if (allow_limit && a == "--limit") { if (auto v = val()) o.limit = (uint32_t)std::atoi(v); }
-        else if (!a.empty() && a[0] == '-') { spl::logf("%s: unexpected option '%s'", ctx, a.c_str()); o.ok = false; }
+        else if (!a.empty() && a[0] == '-') { o.bad = "unknown option '" + a + "'"; o.ok = false; }
         else if (o.peer.empty()) o.peer = a;
-        else { spl::logf("%s: too many arguments", ctx); o.ok = false; }
+        else { o.bad = "too many arguments"; o.ok = false; }
     }
     return o;
 }
@@ -278,8 +280,7 @@ std::unique_ptr<LocalEnd> make_shell_end(const std::vector<std::string>& args, s
 int revshell_main(int argc, char** argv) {
     ShOpts o = parse("spl revshell", argc, argv, /*allow_limit=*/true);
     if (!o.ok || o.peer.empty()) {
-        spl::logf("usage: spl revshell <peer> [--name <n>] [--limit N]");
-        return 2;
+        return usage_error("revshell", o.bad);
     }
     if (auto store = Store::open(nullptr); !store || !store->load(o.peer)) {
         spl::logf("spl revshell: no connection named '%s' (pair first)", o.peer.c_str());
@@ -309,8 +310,7 @@ int revshell_main(int argc, char** argv) {
 int shell_main(int argc, char** argv) {
     ShOpts o = parse("spl shell", argc, argv, /*allow_limit=*/false);
     if (!o.ok || o.peer.empty()) {
-        spl::logf("usage: spl shell <peer> [--name <n>]");
-        return 2;
+        return usage_error("shell", o.bad);
     }
     if (auto store = Store::open(nullptr); !store || !store->load(o.peer)) {
         spl::logf("spl shell: no connection named '%s' (pair first)", o.peer.c_str());

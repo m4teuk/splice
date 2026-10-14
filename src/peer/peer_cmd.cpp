@@ -14,6 +14,7 @@
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/help.h"
 #include "peer/pairing.h"
 #include "peer/pathman.h"
 #include "peer/store.h"
@@ -21,26 +22,6 @@
 namespace spl::peer {
 
 namespace {
-
-void usage() {
-    spl::logf(
-        "usage:\n"
-        "  spl ls <peer>                 what <peer> offers you\n"
-        "  spl peer ...                  manage paired peers (see `spl peer`)\n"
-        "\n"
-        "  spl start [--foreground] [--server H --port N]   run the daemon (stays up)\n"
-        "  spl stop                      stop the daemon\n"
-        "  spl status [-v]               show sessions and pipes\n"
-        "  spl ping <peer>               is the peer reachable right now?\n"
-        "  spl config                    show config file path + values\n"
-        "  spl reset                     drop all registered pipes\n"
-        "  spl reload                    make the daemon re-read the peer files\n"
-        "\n"
-        "  spl register <peer> <pipe> [LIMIT n] <TYPE> [args…]   host a named pipe\n"
-        "  spl unregister <peer> <pipe>\n"
-        "  spl open [--wait] <peer> <pipe>   connect; stdio becomes the pipe\n"
-        "  spl close <peer> <#id>        kill a running instance");
-}
 
 DaemonOpts daemon_opts_from(int argc, char** argv) {
     DaemonOpts o = default_daemon_opts();
@@ -191,29 +172,6 @@ int do_list_remote(int argc, char** argv, const std::string& peer) {
     while (std::getline(is, line))
         if (!line.empty()) std::printf("  %s\n", line.c_str());
     return 0;
-}
-
-void peer_usage() {
-    spl::logf(
-        "usage: spl peer <command>\n"
-        "  ls                      list paired peers\n"
-        "  show <name>             everything about one peer\n"
-        "  rename <old> <new>      rename a peer\n"
-        "  remove <name>           forget a peer (unpair)\n"
-        "  add-address <name> <host[:port]>      also look for the peer at this address\n"
-        "  remove-address <name> <host[:port]>   stop looking there (also forgets a remembered one)\n"
-        "  set <name> <setting> <on|off>         change a setting (all on by default):\n"
-        "        relay             use the relay server for this peer\n"
-        "        lan-discovery     broadcast on local networks to find this peer\n"
-        "        remember-address  save the last addresses that worked and try them first\n"
-        "  set <name> lan-port <N|default>       the port that peer listens on for LAN discovery\n"
-        "                                        (learned at pairing; only set it if they changed it)\n"
-        "\n"
-        "addresses are hints (a LAN IP, a Tailscale name, …): the daemon asks there as\n"
-        "well as broadcasting and using the relay, and takes whatever answers first.\n"
-        "\n"
-        "pair with a new peer:  spl pair\n"
-        "what a peer offers:    spl ls <peer>");
 }
 
 // "just now", "5 min ago", "3 h ago", "2 d ago"
@@ -465,21 +423,25 @@ int do_remove(const std::string& name) {
 
 
 int peer_cmd_main(int argc, char** argv) {
-    if (argc < 2) {
-        usage();
-        return 2;
-    }
+    if (argc < 2) return usage_error("help");
     std::string sub = argv[1];
     if (sub == "ls") {  // what a peer offers us (paired peers are `spl peer ls`)
         const auto a = plain_args(argc, argv);
         if (a.size() != 1) {
-            spl::logf("usage: spl ls <peer>     what <peer> offers you\n"
-                      "       spl peer ls       list your paired peers");
-            return 2;
+            return usage_error("ls", a.empty() ? "which peer? (your paired peers: spl peer ls)"
+                                                : "too many arguments");
         }
         return do_list_remote(argc, argv, a[0]);
     }
 
+    // These take no arguments; refuse extra words rather than act on a typo
+    // (`spl reset desk` must not wipe every peer's offers).
+    if (sub == "start" || sub == "stop" || sub == "status" || sub == "reset" ||
+        sub == "reload" || sub == "config") {
+        for (const auto& w : plain_args(argc, argv))
+            if (!(sub == "status" && (w == "-v" || w == "--verbose")))
+                return usage_error(sub, "unexpected '" + w + "'");
+    }
     if (sub == "start") return do_start(argc, argv);
     if (sub == "stop") return do_stop();
     if (sub == "status") return do_status(has_flag(argc, argv, "-v") || has_flag(argc, argv, "--verbose"));
@@ -501,8 +463,7 @@ int peer_cmd_main(int argc, char** argv) {
     if (sub == "ping") {
         const auto a = plain_args(argc, argv);
         if (a.size() != 1) {
-            usage();
-            return 2;
+            return usage_error(sub);
         }
         return do_ping(argc, argv, a[0]);
     }
@@ -510,23 +471,20 @@ int peer_cmd_main(int argc, char** argv) {
     const auto a = plain_args(argc, argv);
     if (sub == "register") {
         if (a.size() < 3) {
-            usage();
-            return 2;
+            return usage_error(sub);
         }
         const std::string line = "REGISTER " + join(a, 0);
         return a[2] == "PIPE" ? do_pipe_verb(argc, argv, line) : do_verb(argc, argv, line);
     }
     if (sub == "unregister") {
         if (a.size() != 2) {
-            usage();
-            return 2;
+            return usage_error(sub);
         }
         return do_verb(argc, argv, "UNREGISTER " + join(a, 0));
     }
     if (sub == "open") {
         if (a.size() < 2) {
-            usage();
-            return 2;
+            return usage_error(sub);
         }
         const std::string wait = has_flag(argc, argv, "--wait") ? " WAIT" : "";
         if (a.size() == 2)  // default local end: this process via PIPE
@@ -537,71 +495,57 @@ int peer_cmd_main(int argc, char** argv) {
     }
     if (sub == "close") {
         if (a.size() != 2) {
-            usage();
-            return 2;
+            return usage_error(sub);
         }
         return do_verb(argc, argv, "CLOSE " + join(a, 0));
     }
-    usage();
-    return 2;
+    return usage_error(sub);
 }
 
 // `spl peer <sub> …`: manage paired peers.
 int peer_group_main(int argc, char** argv) {
-    if (argc < 2) {
-        peer_usage();
+    if (argc < 2) {  // the group alone: show what's in it
+        print_help("peer");
         return 2;
     }
     const std::string sub = argv[1];
-    if (sub == "-h" || sub == "--help") {
-        peer_usage();
-        return 0;
-    }
     if (sub == "ls" || sub == "list") {
         if (argc != 2) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_list();
     }
     if (sub == "show") {
         if (argc != 3) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_show(argv[2]);
     }
     if (sub == "rename") {
         if (argc != 4) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_rename(argv[2], argv[3]);
     }
     if (sub == "remove" || sub == "rm") {
         if (argc != 3) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_remove(argv[2]);
     }
     if (sub == "set") {
         if (argc != 5) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_set(argv[2], argv[3], argv[4]);
     }
     if (sub == "add-address" || sub == "remove-address") {
         if (argc != 4) {
-            peer_usage();
-            return 2;
+            return usage_error("peer " + sub);
         }
         return do_address(argv[2], argv[3], sub == "add-address");
     }
-    spl::logf("spl peer: unknown command '%s'", sub.c_str());
-    peer_usage();
-    return 2;
+    return usage_error("peer", "unknown command '" + sub + "'");
 }
 
 }  // namespace spl::peer

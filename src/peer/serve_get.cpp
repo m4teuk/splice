@@ -21,6 +21,7 @@
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/help.h"
 
 namespace spl::peer {
 
@@ -34,6 +35,7 @@ struct Opts {
     std::string name, out;
     uint32_t limit = 0;
     bool overwrite = false, background = false, ok = true;
+    std::string bad;  // why parsing failed (empty: wrong number of arguments)
 };
 
 Opts parse(int argc, char** argv) {
@@ -49,7 +51,7 @@ Opts parse(int argc, char** argv) {
         else if (a == "--limit") { if (auto v = val()) o.limit = (uint32_t)std::atoi(v); }
         else if (a == "-f" || a == "--force") o.overwrite = true;
         else if (a == "-b" || a == "--background") o.background = true;
-        else if (!a.empty() && a[0] == '-') { spl::logf("unexpected option '%s'", a.c_str()); o.ok = false; }
+        else if (!a.empty() && a[0] == '-') { o.bad = "unknown option '" + a + "'"; o.ok = false; }
         else o.pos.push_back(a);
     }
     return o;
@@ -139,8 +141,7 @@ int open_and_follow(const Opts& o, const std::string& peer, const std::string& p
 int serve_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl serve <peer> [--name <pipe>] [--limit N] <path>   (path may be a dir)");
-        return 2;
+        return usage_error("serve", o.bad);
     }
     const std::string& peer = o.pos[0];
     const std::string path = abspath(o.pos[1]);
@@ -167,8 +168,7 @@ int serve_main(int argc, char** argv) {
 int get_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl get <peer> <pipe> [-o <path>] [-f] [-b]");
-        return 2;
+        return usage_error("get", o.bad);
     }
     const std::string target = o.out.empty() ? abspath(".") : abspath(o.out);
     std::string args = "GET_FILE " + ctl_encode(target);
@@ -179,9 +179,7 @@ int get_main(int argc, char** argv) {
 int send_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() < 2) {
-        spl::logf("usage: spl send <peer> <path>…   (each path may be a directory; "
-                  "--name <inbox> targets a named inbox)");
-        return 2;
+        return usage_error("send", o.bad);
     }
     const std::string& peer = o.pos[0];
     const std::string inbox = o.name.empty() ? kInbox : o.name;  // which inbox to push into
@@ -198,8 +196,7 @@ int send_main(int argc, char** argv) {
 int inbox_main(int argc, char** argv) {
     Opts o = parse(argc, argv);
     if (!o.ok || o.pos.size() != 2) {
-        spl::logf("usage: spl inbox <peer> <dir> [--name <inbox>] [--limit N] [-f]");
-        return 2;
+        return usage_error("inbox", o.bad);
     }
     const std::string& peer = o.pos[0];
     const std::string dir = abspath(o.pos[1]);

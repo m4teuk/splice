@@ -14,6 +14,7 @@
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/help.h"
 #include "peer/store.h"
 
 namespace spl::peer {
@@ -27,16 +28,14 @@ int chat_main(int argc, char** argv) {
             opts.server = argv[++i];
         } else if (a == "--port" && i + 1 < argc) {
             opts.port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        } else if (!a.empty() && a[0] != '-') {
+        } else if (!a.empty() && a[0] != '-' && name.empty()) {
             name = a;
         } else {
-            spl::logf("spl chat: unexpected argument '%s'", a.c_str());
-            return 2;
+            return usage_error("chat", "unexpected '" + a + "'");
         }
     }
     if (name.empty()) {
-        spl::logf("usage: spl chat <name> [--server H --port N]");
-        return 2;
+        return usage_error("chat");
     }
 
     std::string err;

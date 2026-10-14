@@ -96,6 +96,9 @@ That's the whole day-to-day. Transfers show live progress; add `-b` to a
 
 ## Command reference
 
+The full text for each command is built in: `spl help <command>` (or
+`spl <command> --help`, `spl help peer set`, …). In short:
+
 ```
 spl serve <peer> [--name n] <path>    host a file/dir for the peer to fetch (--limit N)
 spl get   <peer> <pipe> [-o p] [-f] [-b]   fetch a served file/dir (-o DIR/FILE, -f force, -b background)

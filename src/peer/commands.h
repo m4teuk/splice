@@ -26,7 +26,7 @@ inline constexpr CommandDef kCommands[] = {
     {"config", true, false},  {"start", true, false},     {"stop", true, false},
     {"reset", true, false},   {"reload", true, false},    {"register", true, false},
     {"unregister", true, false}, {"open", true, false},   {"close", true, false},
-    {"ls", true, false},      {"peer", false, false},
+    {"ls", true, false},      {"peer", false, false},     {"help", false, false},
 };
 
 struct PeerSubDef {

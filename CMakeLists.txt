@@ -112,6 +112,7 @@ add_library(spl_peer STATIC
   src/peer/chat.cpp
   src/peer/shell.cpp
   src/peer/peer_cmd.cpp
+  src/peer/help.cpp
 )
 # native FFI (keygen/random/spake2) resolves at final link against spl_native.
 find_package(Threads REQUIRED)  # the daemon resolves the relay on a helper thread
@@ -237,6 +238,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME complete_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)
+
+    add_test(NAME help_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/help_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(help_integration PROPERTIES TIMEOUT 60)
 
     add_test(NAME lifecycle_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/lifecycle_it.py $<TARGET_FILE:spl>)

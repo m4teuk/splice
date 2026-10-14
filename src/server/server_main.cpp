@@ -38,21 +38,6 @@ constexpr double per_ip_rate = 500, per_ip_burst = 1000;
 constexpr double global_rate = 10000, global_burst = 20000;
 }  // namespace suggest
 
-void usage() {
-    spl::logf(
-        "usage: spl server [options]\n"
-        "  --setup         (re)run the interactive configuration walkthrough\n"
-        "  --bind HOST     address to bind\n"
-        "  --port N        TCP (pairing) and UDP (relay) port\n"
-        "  --tcp-port N    override pairing TCP port\n"
-        "  --udp-port N    override relay UDP port\n"
-        "  --cert FILE     TLS certificate (PEM); ephemeral self-signed if omitted\n"
-        "  --key FILE      TLS private key (PEM)\n"
-        "  -v, --verbose   verbose logging\n"
-        "\n"
-        "With no config and no flags, the first run walks you through setup.");
-}
-
 // Render a number as a plain integer when whole (for prompt defaults).
 std::string num_str(double v) {
     if (v == static_cast<long long>(v)) return std::to_string(static_cast<long long>(v));
@@ -159,12 +144,8 @@ int server_main(int argc, char** argv) {
             has_key = true;
         } else if (a == "-v" || a == "--verbose") {
             verbose = true;
-        } else if (a == "-h" || a == "--help") {
-            usage();
-            return 0;
-        } else {
-            spl::logf("spl server: unknown argument '%s'", a.c_str());
-            usage();
+        } else {  // (`spl server --help` is answered before we get here)
+            spl::logf("spl server: unknown argument '%s' (see: spl server --help)", a.c_str());
             return 2;
         }
     }

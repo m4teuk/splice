@@ -31,6 +31,7 @@
 #include "net/tls.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/help.h"
 #include "common/time.h"
 #include "net/endpoint.h"
 #include "peer/pathman.h"
@@ -641,25 +642,6 @@ int pair_local_follower(const std::string& code_arg, const std::string& at, uint
                        {peer_host});
 }
 
-void usage() {
-    spl::logf(
-        "usage:\n"
-        "  spl pair [options]            generate a code and wait for a peer (leader)\n"
-        "  spl pair <code> [options]     join using a peer's code (follower)\n"
-        "options:\n"
-        "  --server HOST   rendezvous server (default: splice.kussowski.dev)\n"
-        "  --port N        server port (default: 443)\n"
-        "  --name NAME     accept non-interactively and store under NAME\n"
-        "  --local         pair over the local network, without the relay (also what\n"
-        "                  happens by itself when the relay can't be reached)\n"
-        "  --at HOST       (joining a local code) where the other device is, when it\n"
-        "                  isn't on the same network: a VPN/Tailscale address or name\n"
-        "  --lan-port N    (joining a local code) the other device's LAN port, if it\n"
-        "                  isn't the default (it tells you when that's needed)\n"
-        "  -v, --verbose\n"
-        "A code starting with L (L37-481922) is a local one.");
-}
-
 }  // namespace
 
 int pair_main(int argc, char** argv) {
@@ -704,13 +686,10 @@ int pair_main(int argc, char** argv) {
             insecure = true;
         } else if (a == "-v" || a == "--verbose") {
             verbose = true;
-        } else if (a == "-h" || a == "--help") {
-            usage();
-            return 0;
         } else if (!a.empty() && a[0] == '-') {
-            spl::logf("spl pair: unknown option '%s'", a.c_str());
-            usage();
-            return 2;
+            return usage_error("pair", "unknown option '" + a + "'");
+        } else if (!code_arg.empty()) {
+            return usage_error("pair", "too many arguments");
         } else {
             code_arg = a;  // positional: the pairing code
         }

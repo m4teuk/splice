@@ -16,6 +16,7 @@
 #include "peer/chat.h"
 #include "peer/commands.h"
 #include "peer/complete.h"
+#include "peer/help.h"
 #include "peer/pairing.h"
 #include "peer/peer_cmd.h"
 #include "peer/serve_get.h"
@@ -55,45 +56,30 @@ int cmd_update() {
     return 1;
 }
 
-void print_usage() {
-    std::puts(
-        "usage: spl <command> [args]\n"
-        "\n"
-        "pairing:\n"
-        "  pair [code]                         pair with another device\n"
-        "  peer ls | show | rename | remove    manage paired peers (see: spl peer)\n"
-        "\n"
-        "moving data:\n"
-        "  serve <peer> [--name n] <path>      host a file/dir for the peer to fetch\n"
-        "  get <peer> <pipe> [-o p] [-b]       fetch a served file/dir\n"
-        "  inbox <peer> <dir> [--limit N]      let the peer push files to you\n"
-        "  send <peer> <path...>               push files into the peer's inbox\n"
-        "  chat <name>                         talk to the peer (a PIPE pair)\n"
-        "  revshell <peer> [--name n]          offer a shell on this machine to the peer\n"
-        "  shell <peer> [--name n]             open a shell on the peer\n"
-        "  ls <peer>                           what the peer offers you\n"
-        "\n"
-        "seeing what's happening:\n"
-        "  status [-v]                         every peer: link, offers, live connections\n"
-        "  ping <peer>                         is the peer reachable right now?\n"
-        "\n"
-        "daemon and plumbing:\n"
-        "  start | stop | reset | config       daemon lifecycle / drop all offers / config\n"
-        "  reload                              make the daemon re-read the peer files\n"
-        "  register | unregister | open | close   raw pipes (ECHO, SHARE_FILE, GET_FILE, SHELL, PIPE)\n"
-        "  server                              run your own rendezvous + relay server\n"
-        "  update                              re-run the installer to get the latest spl\n"
-        "\n"
-        "  --version   print version\n"
-        "  --selftest  verify the native (Rust) FFI link\n"
-        "  --help      show this help");
+// `spl help [topic…]`: the overview, or one page ("help peer set" -> "peer set").
+int cmd_help(int argc, char** argv) {
+    std::string topic;  // the words, minus any -h/--help ("spl help get --help" = get)
+    bool flag = false;
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "-h" || a == "--help") flag = true;
+        else topic += (topic.empty() ? "" : " ") + std::string(a);
+    }
+    if (topic.empty()) {
+        if (flag) spl::peer::print_help("help");
+        else spl::peer::print_overview();
+        return 0;
+    }
+    if (spl::peer::print_help(topic)) return 0;
+    std::fprintf(stderr, "spl help: no command '%s' (see: spl help)\n", topic.c_str());
+    return 2;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        print_usage();
+        spl::peer::print_overview();
         return 2;
     }
 
@@ -114,7 +100,13 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     }
     if (cmd == "--help" || cmd == "-h") {
-        print_usage();
+        spl::peer::print_overview();
+        return 0;
+    }
+    if (cmd == "help") return cmd_help(argc, argv);
+    // `spl <command> … --help` shows that command's page and never runs it.
+    if (auto topic = spl::peer::help_request(argc, argv)) {
+        spl::peer::print_help(*topic);
         return 0;
     }
 
@@ -127,7 +119,7 @@ int main(int argc, char** argv) {
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
     if (cmd == "revshell") return spl::peer::revshell_main(argc - 1, argv + 1);
     if (cmd == "shell") return spl::peer::shell_main(argc - 1, argv + 1);
-    if (cmd == "update") return cmd_update();
+    if (cmd == "update") return argc == 2 ? cmd_update() : spl::peer::usage_error("update");
     if (cmd == "peer") return spl::peer::peer_group_main(argc - 1, argv + 1);
     if (cmd == "__complete") return spl::peer::complete_main(argc - 1, argv + 1);
 
@@ -141,8 +133,7 @@ int main(int argc, char** argv) {
                      cmd == "list" ? "ls" : cmd == "rm" ? "remove" : std::string(cmd).c_str());
         return 2;
     }
-    std::fprintf(stderr, "spl: unknown command '%.*s'\n",
+    std::fprintf(stderr, "spl: unknown command '%.*s' (see: spl help)\n",
                  static_cast<int>(cmd.size()), cmd.data());
-    print_usage();
     return 2;
 }
