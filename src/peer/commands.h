@@ -23,6 +23,7 @@ inline constexpr CommandDef kCommands[] = {
     {"server", false, false}, {"pair", false, false},     {"serve", false, false},
     {"get", false, false},    {"send", false, false},     {"inbox", false, false},
     {"chat", false, false},   {"revshell", false, false}, {"shell", false, false},
+    {"run", false, false},    {"expose", false, false},
     {"update", false, false}, {"status", true, false},    {"ping", true, false},
     {"config", true, false},  {"start", true, false},     {"stop", true, false},
     {"reset", true, false},   {"reload", true, false},    {"drop", true, false},

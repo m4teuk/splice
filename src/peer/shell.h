@@ -1,29 +1,20 @@
-// SHELL pipe type + its two CLI commands.
+// Commands on EXEC pipes (peer/exec.h):
 //
-//   spl revshell <peer> [--name n] [--limit N]   host: offer a shell on this box
-//   spl shell    <peer> [--name n]                client: attach to the peer's shell
+//   spl expose   <peer> [--name n] [--pty] [--limit N] <program> [args...]   offer a program
+//   spl revshell <peer> [--name n] [--limit N]    offer the login shell (EXEC PTY preset)
+//   spl run      <peer> <name>                    run an offered program; its status is ours
+//   spl shell    <peer> [--name n]                the same, on our terminal (needs a PTY offer)
 //
-// The host side is a daemon-owned, durable registration (like SHARE_FILE): each
-// inbound connection forkpty's the host's $SHELL and splices the PTY ↔ tunnel,
-// so the peer gets a fresh shell per attach, any number at once, until it is
-// unregistered. The client side bridges the local terminal in raw mode and
-// forwards window-size changes — so it feels like ssh. See docs/PIPES.md.
+// `run` and `shell` exit with the program's status (128 + signal if it was
+// killed), and 255 when spl itself fails (unreachable, not offered, the wrong
+// kind, the connection lost mid-run). See docs/PIPES.md.
 #pragma once
-
-#include <memory>
-#include <string>
-#include <vector>
-
-#include "peer/pipes.h"
 
 namespace spl::peer {
 
-// Factory for the daemon-owned SHELL end (called by make_local_end). Takes no
-// args; the actual forkpty happens in start(), so REGISTER-time validation is
-// cheap and one shell is spawned per connection.
-std::unique_ptr<LocalEnd> make_shell_end(const std::vector<std::string>& args, std::string* err);
-
-int revshell_main(int argc, char** argv);  // host
-int shell_main(int argc, char** argv);     // client
+int expose_main(int argc, char** argv);
+int revshell_main(int argc, char** argv);
+int run_main(int argc, char** argv);
+int shell_main(int argc, char** argv);
 
 }  // namespace spl::peer

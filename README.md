@@ -20,6 +20,9 @@ the relay server.
 - **Get a shell on a machine you own** — `spl revshell laptop` offers one,
   `spl shell laptop` attaches; it feels like ssh (raw terminal, live resize), with
   no ssh server to run or expose.
+- **Let a peer run one command, and nothing else** — `spl expose nas ~/bin/backup`,
+  then `tar c docs | spl run desktop backup && echo done` on the other side: input,
+  output, errors and the exit code pass through, the command line stays yours.
 - **Resume interrupted transfers** automatically, with per-file checksums, over
   directories of any depth.
 - All of it **end-to-end encrypted** (WireGuard), **without root** (no TUN
@@ -108,6 +111,8 @@ spl chat  <peer>                      talk: a terminal on each end of a pipe
 
 spl revshell <peer> [--name n] [--limit N]   offer a shell on this machine to a peer
 spl shell    <peer> [--name n]               open a shell on the peer (feels like ssh)
+spl expose   <peer> [--name n] [--pty] [--limit N] <program> [args…]   let the peer run one program
+spl run      <peer> <name>                   run it: stdin/stdout/stderr and the exit code pass through
 
 spl status [-v]                       all peers: path, pipes, progress (-v: addresses, bytes, candidates)
 spl ping  <peer>                      reachability + rough RTT
@@ -125,7 +130,7 @@ spl peer remove-address <peer> <host[:port]>
 spl peer set <peer> <setting> <on|off>        relay | lan-discovery | remember-address (all on by default)
 spl update                            re-run the installer to get the latest spl
 
-spl pipe register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, SHELL, PIPE)
+spl pipe register | unregister | open | close   raw pipe plumbing (ECHO, SHARE_FILE, GET_FILE, EXEC, SHELL, PIPE)
 ```
 
 **Transfers are robust by default.** They handle directories recursively, verify

@@ -29,6 +29,13 @@ class TcpConn {
 
     size_t sndbuf() const;  // bytes that can be queued right now
 
+    // Receive flow control. By default received bytes are acknowledged to the
+    // sender's window as soon as on_recv has them. With hold_recv(true) they're
+    // acknowledged only when the app says it has consumed them (recved), so an
+    // app that can't keep up slows the sender down instead of buffering.
+    void hold_recv(bool on) { hold_recv_ = on; }
+    void recved(size_t n);
+
     explicit TcpConn(tcp_pcb* pcb);
     ~TcpConn();  // aborts the pcb if still open (no callbacks fire)
 
@@ -59,6 +66,7 @@ class TcpConn {
     Bytes pending_;
     bool connected_ = false;  // ever established (connect succeeded or accepted)
     bool want_close_ = false;
+    bool hold_recv_ = false;
 };
 
 class Netstack {

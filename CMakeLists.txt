@@ -111,6 +111,7 @@ add_library(spl_peer STATIC
   src/peer/complete.cpp
   src/peer/chat.cpp
   src/peer/shell.cpp
+  src/peer/exec.cpp
   src/peer/peer_cmd.cpp
   src/peer/help.cpp
 )
@@ -239,6 +240,10 @@ if(SPL_BUILD_TESTS)
     add_test(NAME complete_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/complete_it.py $<TARGET_FILE:spl>)
     set_tests_properties(complete_integration PROPERTIES TIMEOUT 90)
+
+    add_test(NAME exec_integration
+             COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/exec_it.py $<TARGET_FILE:spl>)
+    set_tests_properties(exec_integration PROPERTIES TIMEOUT 300)
 
     add_test(NAME kinds_integration
              COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/kinds_it.py $<TARGET_FILE:spl>)

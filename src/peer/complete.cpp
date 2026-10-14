@@ -33,7 +33,7 @@ std::vector<std::string> command_names() {
         if (!c.alias) v.emplace_back(c.name);
     return v;
 }
-const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "SHELL", "PIPE"};
+const std::vector<std::string> kTypes = {"ECHO", "SHARE_FILE", "GET_FILE", "EXEC", "SHELL", "PIPE"};
 
 // Per-command flags. Value-flags consume the following word.
 std::set<std::string> value_flags(const std::string& cmd) {
@@ -41,7 +41,8 @@ std::set<std::string> value_flags(const std::string& cmd) {
     if (cmd == "get") return {"-o", "--out", "--server", "--port"};
     if (cmd == "send") return {"--name", "--server", "--port"};
     if (cmd == "inbox") return {"--name", "--limit", "--server", "--port"};
-    if (cmd == "revshell") return {"--name", "--limit", "--server", "--port"};
+    if (cmd == "revshell" || cmd == "expose") return {"--name", "--limit", "--server", "--port"};
+    if (cmd == "run") return {"--server", "--port"};
     if (cmd == "shell") return {"--name", "--server", "--port"};
     if (cmd == "pipe:register") return {"LIMIT", "--server", "--port"};
     if (cmd == "pipe:open" || cmd == "pipe:unregister" || cmd == "pipe:close" || cmd == "chat" ||
@@ -56,6 +57,7 @@ std::set<std::string> bool_flags(const std::string& cmd) {
     if (cmd == "send") return {"-b", "--background"};
     if (cmd == "inbox") return {"-f", "--force"};
     if (cmd == "pipe:open") return {"--wait"};
+    if (cmd == "expose") return {"--pty"};
     if (cmd == "status") return {"-v", "--verbose"};
     if (cmd == "start") return {"--foreground"};
     if (cmd == "pair") return {"--insecure", "--local", "-v", "--verbose"};
@@ -175,6 +177,8 @@ std::vector<std::string> positional(const std::string& cmd, size_t idx,
     if (cmd == "get") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
     if (cmd == "send") return idx == 0 ? peer() : std::vector<std::string>{"__FILES__"};  // peer then path(s)
     if (cmd == "inbox") return idx == 0 ? peer() : (idx == 1 ? std::vector<std::string>{"__DIRS__"} : std::vector<std::string>{});
+    if (cmd == "run") return idx == 0 ? peer() : (idx == 1 ? remote_pipes(pos.empty() ? "" : pos[0]) : std::vector<std::string>{});
+    if (cmd == "expose") return idx == 0 ? peer() : (idx == 1 ? std::vector<std::string>{"__FILES__"} : std::vector<std::string>{});
     if (cmd == "chat" || cmd == "ping" || cmd == "revshell" || cmd == "shell" || cmd == "ls")
         return idx == 0 ? peer() : std::vector<std::string>{};
     // `spl peer <sub> …` (the group word is folded away by complete_main).

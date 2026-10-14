@@ -1,20 +1,15 @@
+// Commands on EXEC pipes (peer/exec.h): offering a program (`expose`, and
+// `revshell` for the login shell) and running one (`run`, and `shell` for one
+// on a terminal). Both client commands are one bridge: frames to and from the
+// program, our terminal handed over when the offer has a PTY, and the program's
+// exit status as ours.
 #include "peer/shell.h"
 
-#include <dirent.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <sys/syscall.h>
-#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
-
-#if defined(__APPLE__)
-#include <util.h>  // forkpty
-#else
-#include <pty.h>   // forkpty
-#endif
 
 #include <cerrno>
 #include <cstdint>
@@ -22,11 +17,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
-#include "common/io.h"
 #include "common/log.h"
 #include "peer/daemon.h"
 #include "peer/daemon_client.h"
+#include "peer/exec.h"
 #include "peer/help.h"
 #include "peer/store.h"
 
@@ -34,309 +30,296 @@ namespace spl::peer {
 
 namespace {
 
-// --- the client→host frame protocol -------------------------------------
-// Keystrokes and window-size changes share the one pipe, so the client→host
-// direction is framed: [type:1][len:2 BE][payload]. The host→client direction
-// is a raw byte stream (the shell's output), so the client just writes it to
-// its terminal — no framing needed there.
-constexpr uint8_t kData = 0;   // payload = terminal bytes -> the PTY
-constexpr uint8_t kWinsz = 1;  // payload = rows:2 BE, cols:2 BE -> TIOCSWINSZ
+using namespace execproto;
+
 constexpr size_t kChunk = 4096;
+constexpr int kSplFailed = 255;  // spl itself failed (as ssh): never a program's code
+
+volatile sig_atomic_t g_winch = 0;
+void on_winch(int) { g_winch = 1; }
+
+bool write_full(int fd, const char* p, size_t n) {
+    while (n > 0) {
+        const ssize_t w = ::write(fd, p, n);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return false;
+        p += w;
+        n -= static_cast<size_t>(w);
+    }
+    return true;
+}
+
+bool send_frame(int fd, uint8_t type, const char* p, size_t len) {
+    const char h[3] = {static_cast<char>(type), static_cast<char>(len >> 8),
+                       static_cast<char>(len & 0xff)};
+    return write_full(fd, h, 3) && (len == 0 || write_full(fd, p, len));
+}
+
+void send_winsize(int fd) {
+    winsize ws{};
+    if (::ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != 0) return;
+    const char b[4] = {static_cast<char>(ws.ws_row >> 8), static_cast<char>(ws.ws_row & 0xff),
+                       static_cast<char>(ws.ws_col >> 8), static_cast<char>(ws.ws_col & 0xff)};
+    send_frame(fd, kWinsz, b, 4);
+}
+
+// Our terminal in raw mode for as long as this lives (when there is one).
+struct RawTerminal {
+    bool on = false;
+    termios saved{};
+    explicit RawTerminal(bool want) {
+        if (!want || !::isatty(STDIN_FILENO) || ::tcgetattr(STDIN_FILENO, &saved) != 0) return;
+        termios raw = saved;
+        ::cfmakeraw(&raw);
+        on = ::tcsetattr(STDIN_FILENO, TCSANOW, &raw) == 0;
+    }
+    ~RawTerminal() {
+        if (on) ::tcsetattr(STDIN_FILENO, TCSANOW, &saved);
+    }
+};
+
+// Bridge stdin/stdout/stderr to the connected EXEC pipe `fd` until the program's
+// EXIT arrives; returns its status (exit code, or 128 + signal), or 255 if the
+// connection ended without one. With `pty` our terminal is handed over (raw
+// mode, size changes forwarded).
+int run_exec_client(int fd, bool pty, const std::string& peer) {
+    ::signal(SIGPIPE, SIG_IGN);
+    int status = -1;
+    std::string why;
+    {
+        RawTerminal term(pty);
+        if (term.on) {
+            ::signal(SIGWINCH, on_winch);
+            send_winsize(fd);  // before the program draws anything
+        }
+        bool stdin_open = true;
+        std::string buf;
+        while (status < 0 && why.empty()) {
+            if (g_winch) {
+                g_winch = 0;
+                send_winsize(fd);
+            }
+            pollfd p[2] = {{fd, POLLIN, 0}, {STDIN_FILENO, POLLIN, 0}};
+            if (::poll(p, stdin_open ? 2 : 1, -1) < 0) {
+                if (errno == EINTR) continue;  // a SIGWINCH
+                why = "poll failed";
+                break;
+            }
+            if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+                char rb[kChunk + 3];
+                const ssize_t n = ::read(fd, rb, sizeof(rb));
+                if (n <= 0) {
+                    why = "connection to " + peer + " lost; the program was stopped";
+                    break;
+                }
+                buf.append(rb, static_cast<size_t>(n));
+                size_t off = 0;
+                while (buf.size() - off >= 3) {
+                    const uint8_t type = static_cast<uint8_t>(buf[off]);
+                    const size_t len = (static_cast<uint8_t>(buf[off + 1]) << 8) |
+                                       static_cast<uint8_t>(buf[off + 2]);
+                    if (buf.size() - off - 3 < len) break;
+                    const char* d = buf.data() + off + 3;
+                    if (type == kOut || type == kErr) {
+                        if (!write_full(type == kErr ? STDERR_FILENO : STDOUT_FILENO, d, len) &&
+                            type == kOut) {
+                            // Our output is gone (`spl run … | head`): stop, as a
+                            // local program would on SIGPIPE; hanging up stops it there.
+                            status = 128 + SIGPIPE;
+                            break;
+                        }
+                    } else if (type == kExit && len == 2) {
+                        const int how = static_cast<uint8_t>(d[0]), code = static_cast<uint8_t>(d[1]);
+                        status = how == kSignaled ? 128 + code : code;
+                        break;
+                    }
+                    off += 3 + len;
+                }
+                buf.erase(0, std::min(off, buf.size()));
+            }
+            if (stdin_open && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+                char ib[kChunk];
+                const ssize_t n = ::read(STDIN_FILENO, ib, sizeof(ib));
+                if (n <= 0) {  // our input ended: the program's does too; keep its output coming
+                    send_frame(fd, kEof, nullptr, 0);
+                    stdin_open = false;
+                } else {
+                    send_frame(fd, kData, ib, static_cast<size_t>(n));
+                }
+            }
+        }
+        if (term.on) ::signal(SIGWINCH, SIG_DFL);
+    }  // terminal restored before we print anything
+    if (status >= 0) return status;
+    spl::logf("spl: %s", why.c_str());
+    return kSplFailed;
+}
+
+// OPEN an EXEC offer and run the bridge. `expect` is the kind it must be.
+int open_exec(const DaemonOpts& dopts, const std::string& ctx, const std::string& peer,
+              const std::string& name, const std::string& expect) {
+    if (auto store = Store::open(nullptr); !store || !store->load(peer)) {
+        spl::logf("%s: no peer named '%s' (see: spl peer ls)", ctx.c_str(), peer.c_str());
+        return kSplFailed;
+    }
+    std::string err;
+    if (!ensure_daemon(dopts, &err)) {
+        spl::logf("%s: %s", ctx.c_str(), err.c_str());
+        return kSplFailed;
+    }
+    const int fd = daemon_connect();
+    if (fd < 0) {
+        spl::logf("%s: cannot reach the daemon", ctx.c_str());
+        return kSplFailed;
+    }
+    const std::string r = send_command(fd, "OPEN " + ctl_encode(peer) + " " + ctl_encode(name) +
+                                               " EXPECT " + ctl_encode(expect) + " PIPE");
+    std::string kind;
+    if (!ok_reply(r)) {
+        daemon_fail(ctx.c_str(), r);
+        ::close(fd);
+        return kSplFailed;
+    }
+    if (!await_ready(fd, &kind, &err)) {
+        spl::logf("%s: %s", ctx.c_str(), err.c_str());
+        ::close(fd);
+        return kSplFailed;
+    }
+    // The offer's kind says whether the program has a terminal (an older peer
+    // says nothing: it can only be a shell, which has one).
+    const bool pty = kind.empty() || kind_matches(kind, "exec/1 pty");
+    const int rc = run_exec_client(fd, pty, peer);
+    ::close(fd);
+    return rc;
+}
+
+// <peer> plus --name/--limit and the relay flags.
+struct ShOpts {
+    DaemonOpts daemon;
+    std::vector<std::string> pos;
+    std::string name;
+    uint32_t limit = 0;
+    bool pty = false;
+    std::string bad;  // why parsing failed
+};
+// Options, then positionals. With `command_after`, the n-th positional starts
+// the program's command line: it and everything after it are the program's
+// (so `spl expose desk ls -la` passes -la to ls).
+ShOpts parse(int argc, char** argv, bool allow_limit, size_t command_after = 0) {
+    ShOpts o;
+    o.daemon = default_daemon_opts();
+    bool rest = false;  // after `--`, or once the program's command line started
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (rest) {
+            o.pos.push_back(a);
+            continue;
+        }
+        auto val = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
+        if (a == "--server") { if (auto v = val()) o.daemon.server = v; }
+        else if (a == "--port") { if (auto v = val()) o.daemon.port = (uint16_t)std::atoi(v); }
+        else if (a == "--name") { if (auto v = val()) o.name = v; }
+        else if (allow_limit && a == "--limit") { if (auto v = val()) o.limit = (uint32_t)std::atoi(v); }
+        else if (command_after && a == "--pty") o.pty = true;
+        else if (a == "--") rest = true;
+        else if (!a.empty() && a[0] == '-') o.bad = "unknown option '" + a + "'";
+        else {
+            o.pos.push_back(a);
+            if (command_after && o.pos.size() > command_after) rest = true;  // the program
+        }
+    }
+    return o;
+}
+
+// REGISTER an EXEC/SHELL offer; prints what was offered and how to stop it.
+int offer(const ShOpts& o, const char* ctx, const std::string& peer, const std::string& name,
+          const std::string& type_args) {
+    if (auto store = Store::open(nullptr); !store || !store->load(peer)) {
+        spl::logf("%s: no peer named '%s' (see: spl peer ls)", ctx, peer.c_str());
+        return 1;
+    }
+    std::string err;
+    if (!ensure_daemon(o.daemon, &err)) {
+        spl::logf("%s: %s", ctx, err.c_str());
+        return 1;
+    }
+    std::string line = "REGISTER " + ctl_encode(peer) + " " + ctl_encode(name) + " ";
+    if (o.limit) line += "LIMIT " + std::to_string(o.limit) + " ";
+    const std::string r = daemon_request(line + type_args);
+    if (!ok_reply(r)) {
+        daemon_fail(ctx, r);
+        return 1;
+    }
+    return 0;
+}
 
 std::string basename_of(const std::string& p) {
     const size_t s = p.find_last_of('/');
     return s == std::string::npos ? p : p.substr(s + 1);
 }
 
-// Close every inherited fd above the PTY (0/1/2) before exec'ing the shell, so
-// it can't touch the daemon's sockets/poller. Done in the forked child only.
-// close_range is one syscall; the /proc walk only touches actually-open fds —
-// either way we avoid a blind loop to _SC_OPEN_MAX (~1M fds = seconds, the bug
-// that made the shell appear dead).
-void close_inherited_fds() {
-#if defined(__linux__) && defined(SYS_close_range)
-    if (::syscall(SYS_close_range, 3u, ~0u, 0) == 0) return;
-#endif
-    if (DIR* d = ::opendir("/proc/self/fd")) {
-        int fds[1024];
-        int n = 0;
-        for (dirent* e; (e = ::readdir(d)) && n < 1024;) {
-            const int fd = ::atoi(e->d_name);
-            if (fd > 2) fds[n++] = fd;
-        }
-        ::closedir(d);
-        for (int i = 0; i < n; ++i) ::close(fds[i]);
-        return;
-    }
-    for (int i = 3; i < 1024; ++i) ::close(i);  // last resort
-}
+}  // namespace
 
-// ===================== host side: the daemon SHELL end =====================
-
-class ShellEnd : public LocalEnd {
- public:
-    ~ShellEnd() override {
-        if (pid_ > 0) {  // hang up the shell and reap it (no zombies)
-            ::kill(pid_, SIGHUP);
-            ::waitpid(pid_, nullptr, 0);
-        }
-        if (master_ >= 0) ::close(master_);
-    }
-
-    void start() override {  // splice begins: spawn the shell on its own PTY
-        struct winsize ws = {24, 80, 0, 0};  // until the client sends its real size
-        int master = -1;
-        const pid_t pid = ::forkpty(&master, nullptr, nullptr, &ws);
-        if (pid < 0) {
-            err_ = "forkpty failed";
-            if (shutdown) shutdown();
-            return;
-        }
-        if (pid == 0) {  // child: become a clean interactive shell
-            // forkpty already gave us a controlling tty on fds 0/1/2; drop every
-            // other inherited daemon fd so the shell can't touch them.
-            close_inherited_fds();
-            ::signal(SIGPIPE, SIG_DFL);
-            ::signal(SIGINT, SIG_DFL);
-            ::signal(SIGTERM, SIG_DFL);
-            ::signal(SIGCHLD, SIG_DFL);
-            const char* sh = ::getenv("SHELL");
-            if (!sh || !*sh) sh = "/bin/sh";
-            if (!::getenv("TERM")) ::setenv("TERM", "xterm-256color", 1);
-            const std::string arg0 = "-" + basename_of(sh);  // login shell
-            ::execl(sh, arg0.c_str(), static_cast<char*>(nullptr));
-            ::_exit(127);
-        }
-        pid_ = pid;
-        master_ = master;
-        const int fl = ::fcntl(master_, F_GETFL, 0);
-        ::fcntl(master_, F_SETFL, fl | O_NONBLOCK);
-        ::fcntl(master_, F_SETFD, FD_CLOEXEC);
-    }
-
-    int watch_fd() const override { return master_; }
-
-    // PTY output -> peer, raw (the client writes it straight to its terminal).
-    void on_fd_data(ByteSpan b) override {
-        if (to_tunnel) to_tunnel(b);
-    }
-
-    // Framed client input -> the PTY (keystrokes) or a resize ioctl.
-    void on_tunnel_data(ByteSpan b) override {
-        ibuf_.append(reinterpret_cast<const char*>(b.data()), b.size());
-        size_t off = 0;
-        while (ibuf_.size() - off >= 3) {
-            const uint8_t type = static_cast<uint8_t>(ibuf_[off]);
-            const size_t len = (static_cast<uint8_t>(ibuf_[off + 1]) << 8) |
-                               static_cast<uint8_t>(ibuf_[off + 2]);
-            if (ibuf_.size() - off - 3 < len) break;  // frame not all here yet
-            const char* p = ibuf_.data() + off + 3;
-            if (type == kData && master_ >= 0) {
-                spl::write_all(master_, p, len);
-            } else if (type == kWinsz && len == 4 && master_ >= 0) {
-                struct winsize ws{};
-                ws.ws_row = (static_cast<uint8_t>(p[0]) << 8) | static_cast<uint8_t>(p[1]);
-                ws.ws_col = (static_cast<uint8_t>(p[2]) << 8) | static_cast<uint8_t>(p[3]);
-                ::ioctl(master_, TIOCSWINSZ, &ws);
-            }
-            off += 3 + len;
-        }
-        ibuf_.erase(0, off);
-    }
-
-    std::string describe() const override { return "shell"; }
-    std::string error() const override { return err_; }
-
- private:
-    pid_t pid_ = -1;
-    int master_ = -1;
-    std::string ibuf_;  // accumulates partial client frames
-    std::string err_;
-};
-
-// ===================== client side: the terminal bridge =====================
-
-volatile sig_atomic_t g_winch = 0;
-void on_winch(int) { g_winch = 1; }
-
-void send_frame(int fd, uint8_t type, const char* p, uint16_t len) {
-    uint8_t h[3] = {type, static_cast<uint8_t>(len >> 8), static_cast<uint8_t>(len & 0xff)};
-    spl::write_all(fd, h, 3);
-    if (len) spl::write_all(fd, p, len);
-}
-
-void send_winsize(int fd) {
-    struct winsize ws{};
-    if (::ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != 0) return;
-    const uint8_t b[4] = {static_cast<uint8_t>(ws.ws_row >> 8), static_cast<uint8_t>(ws.ws_row),
-                          static_cast<uint8_t>(ws.ws_col >> 8), static_cast<uint8_t>(ws.ws_col)};
-    send_frame(fd, kWinsz, reinterpret_cast<const char*>(b), 4);
-}
-
-// Bridge our terminal to the shell pipe `fd` (already connected: the daemon said
-// READY): stdin -> DATA frames, SIGWINCH -> WINSZ frames, and the raw pipe output
-// -> stdout. Returns when the shell/peer closes the pipe.
-int run_shell_client(int fd) {
-    ::signal(SIGPIPE, SIG_IGN);
-    const bool tty = ::isatty(STDIN_FILENO);
-    termios saved{};
-    if (tty) {
-        ::tcgetattr(STDIN_FILENO, &saved);
-        termios raw = saved;
-        ::cfmakeraw(&raw);
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-        ::signal(SIGWINCH, on_winch);
-        send_winsize(fd);  // tell the host our size before the shell draws anything
-    }
-
-    bool stdin_open = true;
-    for (;;) {
-        if (g_winch) {
-            g_winch = 0;
-            send_winsize(fd);
-        }
-        pollfd p[2];
-        p[0] = {fd, POLLIN, 0};
-        int n = 1;
-        if (stdin_open) {
-            p[1] = {STDIN_FILENO, POLLIN, 0};
-            n = 2;
-        }
-        if (::poll(p, n, -1) < 0) {
-            if (errno == EINTR) continue;  // a SIGWINCH interrupted us
-            break;
-        }
-        if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
-            char buf[kChunk];
-            const ssize_t r = ::read(fd, buf, sizeof(buf));
-            if (r <= 0) break;  // shell exited / peer closed
-            spl::write_all(STDOUT_FILENO, buf, static_cast<size_t>(r));
-        }
-        if (n == 2 && (p[1].revents & (POLLIN | POLLHUP | POLLERR))) {
-            char buf[kChunk];
-            const ssize_t r = ::read(STDIN_FILENO, buf, sizeof(buf));
-            if (r <= 0) {
-                // Our stdin ended (piped input, or the terminal closed). Send a
-                // ^D so the remote shell sees EOF and exits, then stop reading
-                // stdin but keep draining its output until it does — closing our
-                // write side here would instead tear the whole pipe down and race
-                // away that final output.
-                const char eot = 0x04;
-                send_frame(fd, kData, &eot, 1);
-                stdin_open = false;
-            } else {
-                send_frame(fd, kData, buf, static_cast<uint16_t>(r));
-            }
-        }
-    }
-
-    if (tty) {
-        ::tcsetattr(STDIN_FILENO, TCSANOW, &saved);
-        ::signal(SIGWINCH, SIG_DFL);
-    }
+int revshell_main(int argc, char** argv) {
+    const ShOpts o = parse(argc, argv, /*allow_limit=*/true);
+    if (!o.bad.empty() || o.pos.size() != 1)
+        return usage_error("revshell", o.bad.empty() && o.pos.size() > 1 ? "too many arguments" : o.bad);
+    const std::string& peer = o.pos[0];
+    const std::string name = o.name.empty() ? "shell" : o.name;
+    if (const int rc = offer(o, "spl revshell", peer, name, "SHELL")) return rc;
+    const std::string suffix = name == "shell" ? "" : " --name " + name;
+    std::printf("offering a shell on this machine to %s as '%s'\n", peer.c_str(), name.c_str());
+    std::printf("  they attach with:  spl shell <you>%s\n", suffix.c_str());
+    std::printf("  this lets %s run commands as you until you stop it: spl drop %s %s\n",
+                peer.c_str(), peer.c_str(), name.c_str());
     return 0;
 }
 
-// Shared arg parsing for the two commands: <peer> plus --name/--limit/server.
-struct ShOpts {
-    DaemonOpts daemon;
-    std::string peer, name = "shell";
-    uint32_t limit = 0;
-    bool ok = true;
-    std::string bad;  // why parsing failed
-};
-ShOpts parse(const char* ctx, int argc, char** argv, bool allow_limit) {
-    ShOpts o;
-    o.daemon = default_daemon_opts();
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        auto val = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
-        if (a == "--server") { if (auto v = val()) o.daemon.server = v; }
-        else if (a == "--port") { if (auto v = val()) o.daemon.port = (uint16_t)std::atoi(v); }
-        else if (a == "--name") { if (auto v = val()) o.name = v; }
-        else if (allow_limit && a == "--limit") { if (auto v = val()) o.limit = (uint32_t)std::atoi(v); }
-        else if (!a.empty() && a[0] == '-') { o.bad = "unknown option '" + a + "'"; o.ok = false; }
-        else if (o.peer.empty()) o.peer = a;
-        else { o.bad = "too many arguments"; o.ok = false; }
+int expose_main(int argc, char** argv) {
+    const ShOpts o = parse(argc, argv, /*allow_limit=*/true, /*command_after=*/1);
+    if (!o.bad.empty() || o.pos.size() < 2)
+        return usage_error("expose", o.bad.empty() && o.pos.size() == 1 ? "which program?" : o.bad);
+    const std::string& peer = o.pos[0];
+    const std::vector<std::string> cmd(o.pos.begin() + 1, o.pos.end());
+    const std::string name = o.name.empty() ? basename_of(cmd[0]) : o.name;
+    std::string type_args = "EXEC";
+    if (o.pty) type_args += " PTY";
+    std::string shown;
+    for (const auto& a : cmd) {
+        type_args += " " + ctl_encode(a);
+        shown += (shown.empty() ? "" : " ") + a;
     }
-    return o;
-}
-
-}  // namespace
-
-std::unique_ptr<LocalEnd> make_shell_end(const std::vector<std::string>& args, std::string* err) {
-    if (!args.empty()) {
-        if (err) *err = "SHELL takes no arguments";
-        return nullptr;
-    }
-    return std::make_unique<ShellEnd>();
-}
-
-int revshell_main(int argc, char** argv) {
-    ShOpts o = parse("spl revshell", argc, argv, /*allow_limit=*/true);
-    if (!o.ok || o.peer.empty()) {
-        return usage_error("revshell", o.bad);
-    }
-    if (auto store = Store::open(nullptr); !store || !store->load(o.peer)) {
-        spl::logf("spl revshell: no connection named '%s' (pair first)", o.peer.c_str());
-        return 1;
-    }
-    std::string err;
-    if (!ensure_daemon(o.daemon, &err)) {
-        spl::logf("spl revshell: %s", err.c_str());
-        return 1;
-    }
-    std::string line = "REGISTER " + ctl_encode(o.peer) + " " + ctl_encode(o.name) + " ";
-    if (o.limit) line += "LIMIT " + std::to_string(o.limit) + " ";
-    line += "SHELL";
-    const std::string r = daemon_request(line);
-    if (!ok_reply(r)) {
-        daemon_fail("spl revshell", r);
-        return 1;
-    }
-    const std::string suffix = o.name == "shell" ? "" : " --name " + o.name;
-    std::printf("offering a shell on this machine to %s as '%s'\n", o.peer.c_str(), o.name.c_str());
-    std::printf("  they attach with:  spl shell <you>%s\n", suffix.c_str());
-    std::printf("  this lets %s run commands as you until you stop it: spl drop %s %s\n",
-                o.peer.c_str(), o.peer.c_str(), o.name.c_str());
+    if (const int rc = offer(o, "spl expose", peer, name, type_args)) return rc;
+    std::printf("offering `%s` to %s as '%s'%s\n", shown.c_str(), peer.c_str(), name.c_str(),
+                o.pty ? " (on a terminal)" : "");
+    if (o.pty)
+        std::printf("  they run it with:  spl shell <you> --name %s\n", name.c_str());
+    else
+        std::printf("  they run it with:  spl run <you> %s\n", name.c_str());
+    std::printf("  stop offering it:  spl drop %s %s\n", peer.c_str(), name.c_str());
     return 0;
 }
 
 int shell_main(int argc, char** argv) {
-    ShOpts o = parse("spl shell", argc, argv, /*allow_limit=*/false);
-    if (!o.ok || o.peer.empty()) {
-        return usage_error("shell", o.bad);
+    const ShOpts o = parse(argc, argv, /*allow_limit=*/false);
+    if (!o.bad.empty() || o.pos.size() != 1) {
+        usage_error("shell", o.bad.empty() && o.pos.size() > 1 ? "too many arguments" : o.bad);
+        return kSplFailed;
     }
-    if (auto store = Store::open(nullptr); !store || !store->load(o.peer)) {
-        spl::logf("spl shell: no connection named '%s' (pair first)", o.peer.c_str());
-        return 1;
+    return open_exec(o.daemon, "spl shell", o.pos[0], o.name.empty() ? "shell" : o.name,
+                     "exec/1 pty");
+}
+
+int run_main(int argc, char** argv) {
+    const ShOpts o = parse(argc, argv, /*allow_limit=*/false);
+    if (!o.bad.empty() || o.pos.size() != 2 || !o.name.empty()) {
+        usage_error("run", !o.bad.empty() ? o.bad
+                           : o.pos.size() > 2 ? "the program's arguments are fixed by the peer "
+                                                "that offers it"
+                                              : "");
+        return kSplFailed;
     }
-    std::string err;
-    if (!ensure_daemon(o.daemon, &err)) {
-        spl::logf("spl shell: %s", err.c_str());
-        return 1;
-    }
-    int fd = daemon_connect();
-    if (fd < 0) {
-        spl::logf("spl shell: cannot reach the daemon");
-        return 1;
-    }
-    const std::string r =
-        send_command(fd, "OPEN " + ctl_encode(o.peer) + " " + ctl_encode(o.name) + " EXPECT " +
-                             ctl_encode("shell/1") + " PIPE");
-    if (!ok_reply(r)) {
-        daemon_fail("spl shell", r);
-        ::close(fd);
-        return 1;
-    }
-    if (!await_ready(fd, nullptr, &err)) {
-        spl::logf("spl shell: %s", err.c_str());
-        ::close(fd);
-        return 1;
-    }
-    const int rc = run_shell_client(fd);
-    ::close(fd);
-    return rc;
+    return open_exec(o.daemon, "spl run", o.pos[0], o.pos[1], "exec/1");
 }
 
 }  // namespace spl::peer

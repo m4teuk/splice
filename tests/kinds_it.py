@@ -47,7 +47,7 @@ def main():
         rows = {l.split()[0]: l for l in ls.stdout.splitlines()[1:] if l.strip()}
         assert "sends files" in rows["report"] and "spl get thefollower report" in rows["report"], ls.stdout
         assert "receives files" in rows["inbox"] and "spl send thefollower <path>" in rows["inbox"], ls.stdout
-        assert "a shell" in rows["shell"] and "spl shell thefollower" in rows["shell"], ls.stdout
+        assert "a program on a terminal" in rows["shell"] and "spl shell thefollower" in rows["shell"], ls.stdout
         assert "a raw pipe" in rows["diag"] and "spl pipe open thefollower diag" in rows["diag"], ls.stdout
         print("  spl ls shows each offer's kind and the command for it")
 

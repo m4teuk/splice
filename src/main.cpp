@@ -119,6 +119,8 @@ int main(int argc, char** argv) {
     if (cmd == "chat") return cmd_chat(argc - 1, argv + 1);
     if (cmd == "revshell") return spl::peer::revshell_main(argc - 1, argv + 1);
     if (cmd == "shell") return spl::peer::shell_main(argc - 1, argv + 1);
+    if (cmd == "run") return spl::peer::run_main(argc - 1, argv + 1);
+    if (cmd == "expose") return spl::peer::expose_main(argc - 1, argv + 1);
     if (cmd == "update") return argc == 2 ? cmd_update() : spl::peer::usage_error("update");
     if (cmd == "peer") return spl::peer::peer_group_main(argc - 1, argv + 1);
     if (cmd == "pipe") return spl::peer::pipe_group_main(argc - 1, argv + 1);

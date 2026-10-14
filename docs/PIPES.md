@@ -150,7 +150,8 @@ version, then words about this end.
 |---|---|---|
 | `file/1 send` | `SHARE_FILE` (serve) | `GET_FILE` (get) |
 | `file/1 recv` | `GET_FILE` (inbox) | `SHARE_FILE` (send) |
-| `shell/1 pty` | `SHELL` (revshell) | the `spl shell` client |
+| `exec/1` | `EXEC` (expose) | the exec client (`spl run`) |
+| `exec/1 pty` | `EXEC PTY`, `SHELL` (expose --pty, revshell) | the exec client (`spl shell`, or `spl run`) |
 | `raw` | `ECHO`, `PIPE` | anything |
 
 It is announced by the daemon from the registration — not by the pipe, and not
@@ -180,7 +181,8 @@ kernel, API, and wire format never change.
 | `ECHO` | anything | a copy of the input (diagnostics) |
 | `SHARE_FILE <path>` | RESUME offsets | the file (or directory) content |
 | `GET_FILE <target> [OVERWRITE]` | the stream → written under `<target>` | RESUME offsets |
-| `SHELL` | framed keystrokes + window-size | a PTY running the host's `$SHELL` |
+| `EXEC [PTY] <program> [args…]` | framed stdin, end of input, window size | framed stdout, stderr, then the exit status |
+| `SHELL` | (`EXEC PTY` of the host user's login shell) | |
 | `PIPE` | from the creating process | to the creating process |
 
 `ECHO` is handy as a diagnostic target — register one explicitly with
@@ -216,18 +218,37 @@ magic also lets the receiver tell a real `SHARE_FILE` apart from any other pipe
 (getting, say, a `chat` reports "not a SHARE_FILE pipe" rather than a vague
 failure). None of this leaks downward — the daemon still splices opaque bytes.
 
-`SHELL` is another matched pair, and the first that needs a **watched fd**: each
-inbound connection `forkpty`s the host's `$SHELL`, and the daemon splices that PTY
-master ↔ the tunnel (a regular file is always "ready" and so is pump-driven; a PTY
-is not, so a `LocalEnd` may expose a `watch_fd()` the daemon polls on its behalf —
-the same hook a future filesystem export will use). It is daemon-owned and durable
-like `SHARE_FILE`: `spl revshell <peer>` registers it once and it serves a fresh
-shell per attach until unregistered (`--limit 1` for a one-shot). The client→host
-direction is framed (`[type:1][len:2][payload]`: data, or a 4-byte window-size
-that becomes a `TIOCSWINSZ`), so resizing the client terminal reflows the remote;
-host→client is the raw shell stream. `spl shell <peer>` attaches with the local
-terminal in raw mode — it feels like `ssh`. Because the host PTY runs as the host
-user, this is a deliberate, named, revocable grant of code execution to one peer.
+`EXEC` is another matched pair: each inbound connection runs a program, fixed
+by the registration (the connecting peer supplies input, never the command
+line), as the host user, in their home directory, in its own session, with
+`SPL_PEER` set to the peer's name. Both directions are framed
+(`[type:1][len:2][payload]`, see `src/peer/exec.h`): to the program DATA, WINSZ
+(a `TIOCSWINSZ`) and EOF (its stdin closes, while its output keeps coming); from
+it OUT, ERR and finally EXIT (exited with a code, or killed by a signal). A
+stream that ends without EXIT means the run was cut off. With `PTY` the program
+runs on a terminal (`forkpty`): its output is one stream and EOF types the
+terminal's end-of-file character. Whether there's a PTY is in the kind
+(`exec/1 pty`), so the client knows before the first byte whether to hand over
+its terminal (raw mode, size changes forwarded). `SHELL` is the `EXEC PTY`
+preset for the host user's login shell.
+
+`spl expose <peer> <program> [args…]` offers a program (`--pty` on a terminal);
+`spl run <peer> <name>` runs it and exits with its status — its exit code, or
+128 + the signal — and with 255 when spl itself fails (unreachable, not offered,
+the wrong kind, the connection lost), as ssh does. `spl revshell`/`spl shell`
+are the same for the login shell, and feel like `ssh`. When a connection goes
+away first, the program's session is sent SIGHUP, and SIGKILL 5 s later.
+Offering a program is a deliberate, named, revocable grant to one peer — and
+one that reads commands from its input (a shell, an interpreter) is a shell.
+
+Ends like `EXEC` don't fit "the daemon pumps one fd": a `LocalEnd` names the
+descriptors it wants polled, each for reading or writing (`watches()`), and the
+daemon re-asks after every call into it, so an end leaves its read fds out while
+the tunnel is full and its write fd out while it has nothing to write. And an
+end that hands data on at its consumer's pace (`manual_flow()`) reports bytes
+as consumed only once they're taken; until then they hold the sender's TCP
+window, so a program that reads its input slowly slows the sender down instead
+of growing a buffer in the daemon.
 
 `spl serve`/`get` are the pull form; `spl inbox`/`send` are the push form (the
 receiver opts in with a `GET_FILE` registration, then the sender opens it with

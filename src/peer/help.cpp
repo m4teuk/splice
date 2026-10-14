@@ -23,7 +23,7 @@ struct Page {
 
 // The overview lists the groups in this order.
 constexpr const char* kGroups[] = {
-    "pairing", "files", "shells and chat", "what's going on", "the daemon", "other",
+    "pairing", "files", "programs and chat", "what's going on", "the daemon", "other",
 };
 
 constexpr Page kPages[] = {
@@ -204,7 +204,7 @@ constexpr Page kPages[] = {
      "see also: spl inbox, spl serve (offer instead of push)"},
 
     // ------------------------------------------------------------ shells and chat
-    {"chat", "shells and chat", "talk to a peer: a terminal on each end",
+    {"chat", "programs and chat", "talk to a peer: a terminal on each end",
      "spl chat <peer>",
      "Both of you run `spl chat <the other>`; whoever is first waits. Lines you\n"
      "type appear on the other side. ^D (or ^C) ends it for both.\n"
@@ -212,11 +212,11 @@ constexpr Page kPages[] = {
      "options:\n"
      RELAY_OPT},
 
-    {"revshell", "shells and chat", "let a peer open a shell on this machine",
+    {"revshell", "programs and chat", "let a peer open a shell on this machine",
      "spl revshell <peer> [--name NAME] [--limit N]",
-     "Offers <peer> a shell on this machine, running as you: they can then run\n"
-     "anything you can. They attach with `spl shell <you>`; each attach gets a\n"
-     "fresh shell. The offer stays (across restarts too) until you remove it with\n"
+     "Offers <peer> your login shell on this machine, running as you: they can\n"
+     "then run anything you can. They attach with `spl shell <you>`; each attach\n"
+     "gets a fresh shell (the same as `spl expose --pty --name shell $SHELL`). The offer stays (across restarts too) until you remove it with\n"
      "`spl drop <peer> <name>`. Shells already open keep running after that;\n"
      "end one with `spl pipe close`.\n"
      "\n"
@@ -227,17 +227,69 @@ constexpr Page kPages[] = {
      "\n"
      "see also: spl shell, spl status"},
 
-    {"shell", "shells and chat", "open a shell a peer offers you",
+    {"shell", "programs and chat", "open a shell (or terminal program) a peer offers you",
      "spl shell <peer> [--name NAME]",
-     "Opens a shell on <peer>, which it offered with `spl revshell`. Your terminal\n"
-     "is handed over to it, like ssh; resizing it resizes the remote one.\n"
+     "Opens a shell on <peer>, which it offered with `spl revshell` (or another\n"
+     "program it offered on a terminal: `spl expose --pty`). Your terminal is\n"
+     "handed over to it, like ssh; resizing it resizes the remote one.\n"
+     "\n"
+     "Exits with the shell's status (`exit 3` there gives 3 here); 255 means spl\n"
+     "itself failed: the peer unreachable, nothing offered under that name, or\n"
+     "the connection lost.\n"
      "\n"
      "options:\n"
-     "  --name NAME   which shell, if they offered it under another name\n"
+     "  --name NAME   which one, if they offered it under another name\n"
      "                (default: shell)\n"
      RELAY_OPT
      "\n"
-     "see also: spl revshell"},
+     "see also: spl revshell, spl run"},
+
+    {"run", "programs and chat", "run a program a peer offers you",
+     "spl run <peer> <name>",
+     "Runs the program <peer> offers as <name> (with `spl expose`), with your\n"
+     "stdin, stdout and stderr connected to it. Its command line is fixed by\n"
+     "whoever offers it: you only give it input. ^C stops it.\n"
+     "\n"
+     "Exits with the program's status: its exit code, or 128 + the signal that\n"
+     "killed it. 255 means spl itself failed: the peer unreachable, <name> not\n"
+     "offered or not a program, or the connection lost mid-run (the program is\n"
+     "then stopped on the peer).\n"
+     "\n"
+     "options:\n"
+     RELAY_OPT
+     "\n"
+     "examples:\n"
+     "  spl run desk backup && echo backed up\n"
+     "  tar c photos | spl run nas store-photos\n"
+     "\n"
+     "see also: spl expose, spl ls (what a peer offers you)"},
+
+    {"expose", "programs and chat", "let a peer run a program on this machine",
+     "spl expose <peer> [--name NAME] [--pty] [--limit N] <program> [args...]",
+     "Lets <peer> run <program>, with exactly these arguments, using `spl run`.\n"
+     "Each run is a fresh process: running as you, in your home directory, with\n"
+     "SPL_PEER set to the peer's name. The peer only gives it input; it can't\n"
+     "change the command line. When the connection drops, the program is hung up\n"
+     "(SIGHUP, then SIGKILL 5 seconds later).\n"
+     "\n"
+     "Options go before <program>: from <program> on, everything is its command\n"
+     "line. Choose with care: a program that takes commands from its input (sh,\n"
+     "python, ssh, ...) gives the peer a shell all the same. The offer stays\n"
+     "(across restarts too) until `spl drop <peer> <name>`.\n"
+     "\n"
+     "options:\n"
+     "  --name NAME   the name the peer runs it by (default: the program's file name)\n"
+     "  --pty         run it on a terminal (for interactive programs); the peer\n"
+     "                then uses `spl shell <you> --name NAME`\n"
+     "  --limit N     remove the offer after N runs\n"
+     RELAY_OPT
+     "\n"
+     "examples:\n"
+     "  spl expose desk ~/bin/backup --full\n"
+     "  spl expose desk --name logs journalctl -n 200\n"
+     "  spl expose desk --pty htop\n"
+     "\n"
+     "see also: spl run, spl revshell, spl drop"},
 
     // ------------------------------------------------------------ what's going on
     {"status", "what's going on", "every peer: how it's connected, offers, transfers",
@@ -335,7 +387,9 @@ constexpr Page kPages[] = {
      "  ECHO               sends back what it receives (for testing)\n"
      "  SHARE_FILE <path>  sends a file or directory (what `serve` uses)\n"
      "  GET_FILE <dir> [OVERWRITE]   receives files (what `inbox` uses)\n"
-     "  SHELL              a shell on this machine (what `revshell` uses)\n"
+     "  EXEC [PTY] <program> [args...]   runs a program per connection (what\n"
+     "                     `expose` uses); PTY puts it on a terminal\n"
+     "  SHELL              the login shell on a terminal (what `revshell` uses)\n"
      "  PIPE               this terminal: stdin and stdout become the pipe, and\n"
      "                     the offer lasts as long as this command runs\n"
      "\n"

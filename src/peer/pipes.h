@@ -1,5 +1,5 @@
 // Daemon-owned pipe ends. A LocalEnd is the local half of a spliced connection
-// when the daemon itself runs it (PONG now; SHARE_FILE/GET_FILE later) — as
+// when the daemon itself runs it (ECHO, SHARE_FILE/GET_FILE, EXEC/SHELL) — as
 // opposed to the PIPE type, where a client process's socket is the local half.
 //
 // The daemon installs to_tunnel/shutdown; the end implements the data hooks.
@@ -23,6 +23,10 @@ class LocalEnd {
     std::function<void(ByteSpan)> to_tunnel;   // send bytes to the other end
     std::function<size_t()> tunnel_space;      // bytes currently sendable without queueing
     std::function<void()> shutdown;            // ask the daemon to close this instance
+    // With manual_flow(): report `n` bytes from on_tunnel_data as consumed. Until
+    // then they count against the sender's window, so the sender slows down.
+    std::function<void(size_t)> consumed;
+    std::string peer;                          // the peer's name (set before start)
 
     virtual void start() {}                    // splicing begins (handshake done)
     virtual void on_tunnel_data(ByteSpan b) = 0;
@@ -33,15 +37,25 @@ class LocalEnd {
     virtual bool done() const { return false; }       // finished its job successfully
     virtual std::string error() const { return ""; }  // non-empty if it failed
 
-    // A descriptor the daemon watches for readability on this end's behalf (e.g.
-    // a PTY master, whose output arrives asynchronously — unlike a regular file,
-    // which is always "ready" and so is pump-driven instead). -1 (the default)
-    // means the end owns no such descriptor and is purely tunnel/tick-driven.
-    // When the fd is readable the daemon reads it (gated by tunnel backpressure)
-    // and hands the bytes to on_fd_data(); EOF/error closes the instance. The
-    // end owns the fd and closes it in its destructor.
-    virtual int watch_fd() const { return -1; }
-    virtual void on_fd_data(ByteSpan) {}
+    // True: the end calls consumed() for every byte on_tunnel_data gives it,
+    // when it has really taken it (e.g. written it on to a process), so a slow
+    // consumer holds the sender back rather than growing a buffer here.
+    virtual bool manual_flow() const { return false; }
+
+    // Descriptors the daemon polls on this end's behalf (a process's pipes, a
+    // PTY), each for readability or writability. The daemon asks again after
+    // every call into the end, so the set can change: e.g. leave a read fd out
+    // while the tunnel is full (backpressure), or a write fd out while there's
+    // nothing to write. When one is ready the daemon calls on_fd_ready(fd); the
+    // end does the I/O itself. The end owns the fds and closes them; one it
+    // closes just drops out of the set.
+    struct Watch {
+        int fd;
+        bool write;
+        bool operator==(const Watch& o) const { return fd == o.fd && write == o.write; }
+    };
+    virtual std::vector<Watch> watches() const { return {}; }
+    virtual void on_fd_ready(int) {}
 };
 
 // ECHO: sends back everything it receives. Diagnostics.
@@ -137,13 +151,14 @@ class GetFileEnd : public LocalEnd {
 
 // --- kinds --------------------------------------------------------------
 // A kind says what an offer is, from the offering side: "<protocol>/<version>"
-// plus words about this end ("file/1 send", "file/1 recv", "shell/1 pty", "raw").
+// plus words about this end ("file/1 send", "file/1 recv", "exec/1", "exec/1 pty",
+// "raw").
 // The offering daemon announces it in the handshake reply ("OK <kind>"), so the
 // opener knows what it reached without trusting anything said later in-band.
 // An older peer announces nothing (""): treated as unknown, not as a mismatch.
 
-// The kind an offer of `type` announces.
-std::string offer_kind(const std::string& type);
+// The kind an offer of `type` (with `args`) announces.
+std::string offer_kind(const std::string& type, const std::vector<std::string>& args = {});
 // The kind a local end of `type` needs the other side to be ("" = anything).
 std::string local_expects(const std::string& type);
 // Does `remote` satisfy `expect`? Same protocol, and every word of `expect`

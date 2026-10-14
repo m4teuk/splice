@@ -31,6 +31,7 @@
 #include "net/poller.h"
 #include "net/private_ipc.h"
 #include "net/socket.h"
+#include "peer/exec.h"
 #include "peer/netstack.h"
 #include "peer/pathman.h"
 #include "peer/pipes.h"
@@ -158,7 +159,10 @@ struct Instance {
     int cfd = -1;                     // …or a bridged client socket (PIPE)
     bool cfd_owned = false;   // OPEN-PIPE owns its fd; inbound-PIPE shares the owner's
     bool cfd_watch = false;   // currently registered with the poller
-    bool lfd_watch = false;   // a LocalEnd's watch_fd() is registered with the poller
+    std::vector<LocalEnd::Watch> watching;  // a LocalEnd's watches() now in the poller
+    // Bytes the end will report consumed that were already acknowledged (they
+    // arrived with the handshake, before its receive window was held).
+    size_t preacked = 0;
     uint64_t up = 0, down = 0;  // bytes local->peer / peer->local
     Millis next_dial = 0, dial_deadline = 0;
     bool dialing = false;
@@ -252,7 +256,8 @@ class Daemon {
     void add_reg(Session& s, const std::string& name, Reg reg);
     void release_owner_fd(Session& s, int fd);  // close a PIPE owner socket nobody uses
     void watch_cfd(Session& s, Instance& in);
-    void watch_local_fd(Session& s, Instance& in);  // watch a LocalEnd's watch_fd()
+    // Make the poller watch exactly what the instance's LocalEnd asks for now.
+    void sync_watches(Session& s, Instance& in);
     // Remove a registration (live instances keep running); returns their ids.
     std::vector<uint64_t> unregister(Session& s, const std::string& name);
     void tick(Millis now);
@@ -401,24 +406,29 @@ void Daemon::bind_end(Session& s, Instance& in) {
         return;
     }
     if (in.local) {
-        Instance* ip = &in;
-        TcpConn* conn = in.conn;
+        Instance* ip = &in;  // the end lives inside the instance: valid while it is
         in.local->to_tunnel = [this, sp, ip](ByteSpan b) { route_to_tunnel(*sp, *ip, b); };
-        in.local->tunnel_space = [conn]() -> size_t { return conn->sndbuf(); };
+        in.local->tunnel_space = [ip]() -> size_t { return ip->conn ? ip->conn->sndbuf() : 0; };
         // Deferred: the end may call shutdown from inside its own methods.
         in.local->shutdown = [sp, id] { sp->want_close.push_back(id); };
-        conn->on_writable = [this, sp, id] {
+        in.local->peer = s.name;
+        if (in.local->manual_flow()) {
+            in.conn->hold_recv(true);
+            in.local->consumed = [ip](size_t n) {
+                const size_t pre = std::min(n, ip->preacked);  // already acknowledged
+                ip->preacked -= pre;
+                if (ip->conn && n > pre) ip->conn->recved(n - pre);
+            };
+        }
+        in.conn->on_writable = [this, sp, id] {
             auto it = sp->insts.find(id);
             if (it == sp->insts.end() || !it->second->local) return;
             Instance& in = *it->second;
             in.local->on_tunnel_writable();
-            // Tunnel has room again: resume a watch_fd read we paused for backpressure.
-            if (in.local->watch_fd() >= 0 && !in.lfd_watch && in.conn &&
-                in.conn->sndbuf() >= kChunk)
-                watch_local_fd(*sp, in);
+            sync_watches(*sp, in);  // room again: the end may want its read fds back
         };
         in.local->start();
-        watch_local_fd(s, in);  // SHELL & friends: start() may have opened a watch_fd
+        sync_watches(s, in);  // start() may have opened descriptors to watch
     }
 }
 
@@ -454,7 +464,7 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             if (line == "__LIST__") {  // the names we serve this peer
                 std::string names;
                 for (const auto& [rname, reg] : s.regs)
-                    names += rname + "\t" + offer_kind(reg.type) + "\n";
+                    names += rname + "\t" + offer_kind(reg.type, reg.args) + "\n";
                 in.conn->send(as_span(names));
                 close_instance(s, id, false);
                 return;
@@ -490,7 +500,7 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             }
             spl::logf("[daemon] %s requested '%s' -> OK (#%llu, %s)", s.name.c_str(), line.c_str(),
                       (unsigned long long)id, in.type.c_str());
-            in.kind = offer_kind(reg.type);
+            in.kind = offer_kind(reg.type, reg.args);
             in.conn->send(as_span("OK " + in.kind + "\n"));
             bind_end(s, in);
         } else {
@@ -534,13 +544,17 @@ void Daemon::on_tunnel_data(Session& s, uint64_t id, ByteSpan b) {
             if (in.cfd >= 0) write_str(in.cfd, "READY " + in.kind + "\n");
             bind_end(s, in);
         }
-        if (!rest.empty()) on_tunnel_data(s, id, as_span(rest));
+        if (!rest.empty()) {
+            in.preacked = rest.size();  // came with the handshake, acknowledged already
+            on_tunnel_data(s, id, as_span(rest));
+        }
         return;
     }
 
     in.down += b.size();
     if (in.local) {
         in.local->on_tunnel_data(b);
+        sync_watches(s, in);
     } else if (in.cfd >= 0) {
         spl::write_all(in.cfd, b.data(), b.size());
     }
@@ -625,33 +639,28 @@ void Daemon::watch_cfd(Session& s, Instance& in) {
     });
 }
 
-// Watch a LocalEnd's own descriptor (e.g. a SHELL's PTY master): when readable,
-// read it (gated by tunnel backpressure) and hand the bytes to on_fd_data();
-// EOF/error ends the instance. The end owns the fd; we only watch and unwatch.
-void Daemon::watch_local_fd(Session& s, Instance& in) {
-    const int wfd = in.local ? in.local->watch_fd() : -1;
-    if (wfd < 0 || in.lfd_watch) return;
-    in.lfd_watch = true;
+void Daemon::sync_watches(Session& s, Instance& in) {
+    std::vector<LocalEnd::Watch> want;
+    if (in.open && in.local) want = in.local->watches();
+    for (const auto& w : in.watching)
+        if (std::find(want.begin(), want.end(), w) == want.end()) poller_.remove(w.fd);
     Session* sp = &s;
     const uint64_t id = in.id;
-    poller_.set(wfd, [this, sp, id, wfd] {
-        auto it = sp->insts.find(id);
-        if (it == sp->insts.end()) return;
-        Instance& in = *it->second;
-        if (in.conn && in.conn->sndbuf() < kChunk) {  // backpressure: pause
-            poller_.remove(wfd);
-            in.lfd_watch = false;
-            return;
-        }
-        uint8_t buf[kChunk];
-        ssize_t n = ::read(wfd, buf, sizeof(buf));
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
-        if (n <= 0) {  // the source closed (e.g. the shell exited)
-            close_instance(*sp, id, true);
-            return;
-        }
-        if (in.local) in.local->on_fd_data(ByteSpan(buf, static_cast<size_t>(n)));
-    });
+    for (const auto& w : want) {
+        if (std::find(in.watching.begin(), in.watching.end(), w) != in.watching.end()) continue;
+        const int fd = w.fd;
+        poller_.set(
+            fd,
+            [this, sp, id, fd] {
+                auto it = sp->insts.find(id);
+                if (it == sp->insts.end() || !it->second->local) return;
+                Instance& in = *it->second;
+                in.local->on_fd_ready(fd);
+                sync_watches(*sp, in);
+            },
+            w.write);
+    }
+    in.watching = std::move(want);
 }
 
 void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
@@ -662,11 +671,8 @@ void Daemon::close_instance(Session& s, uint64_t id, bool finished) {
         if (in.cfd_watch) poller_.remove(in.cfd);
         ::close(in.cfd);
     }
-    if (in.lfd_watch && in.local) {  // unwatch before the end's destructor closes it
-        const int wfd = in.local->watch_fd();
-        if (wfd >= 0) poller_.remove(wfd);
-        in.lfd_watch = false;
-    }
+    for (const auto& w : in.watching) poller_.remove(w.fd);  // before the end closes them
+    in.watching.clear();
     if (in.conn) {
         in.conn->on_recv = nullptr;
         in.conn->on_closed = nullptr;
@@ -962,6 +968,7 @@ void Daemon::adopt_server() {
 }
 
 void Daemon::tick(Millis now) {
+    reap_orphans(now);  // programs whose connection went away before they ended
     if (!server_.valid()) adopt_server();
     if (t_hints_.due(now, 500)) refresh_hints(now);
     if (t_remember_.due(now, 2000)) remember_paths(now);
@@ -1011,11 +1018,10 @@ void Daemon::tick(Millis now) {
             if (in.open && in.cfd >= 0 && in.cfd_owned && !in.cfd_watch && in.conn &&
                 in.conn->sndbuf() >= kChunk)
                 watch_cfd(s, in);
-            // Likewise resume a LocalEnd's watch_fd (e.g. a SHELL's PTY).
-            if (in.open && in.local && in.local->watch_fd() >= 0 && !in.lfd_watch && in.conn &&
-                in.conn->sndbuf() >= kChunk)
-                watch_local_fd(s, in);
-            if (in.local) in.local->tick(now);
+            if (in.local) {
+                in.local->tick(now);
+                sync_watches(s, in);  // e.g. resume reads paused while the tunnel was full
+            }
             // Stream progress to a following client when it changes. Until the
             // handshake lands there are no bytes moving, so show that we're still
             // connecting rather than a misleading "0%".

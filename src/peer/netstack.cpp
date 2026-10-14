@@ -152,7 +152,7 @@ int TcpConn::on_lwip_recv(pbuf* p, int err) {
     }
     Bytes data(p->tot_len);
     pbuf_copy_partial(p, data.data(), p->tot_len, 0);
-    tcp_recved(pcb_, p->tot_len);  // open the receive window before the app callback
+    if (!hold_recv_) tcp_recved(pcb_, p->tot_len);  // open the window before the app callback
     pbuf_free(p);
     if (on_recv) on_recv(as_span(data));
     // Flush the ACK now rather than waiting for the ~250ms delayed-ACK timer. If the
@@ -167,6 +167,16 @@ int TcpConn::on_lwip_sent(uint16_t) {
     flush();  // push more queued data now that the send buffer freed up
     if (!want_close_ && on_writable) on_writable();
     return ERR_OK;
+}
+
+void TcpConn::recved(size_t n) {
+    if (!pcb_) return;
+    while (n > 0) {  // tcp_recved takes a u16
+        const u16_t k = static_cast<u16_t>(std::min<size_t>(n, 0xffff));
+        tcp_recved(pcb_, k);
+        n -= k;
+    }
+    tcp_output(pcb_);  // announce the reopened window now
 }
 
 size_t TcpConn::sndbuf() const { return pcb_ ? tcp_sndbuf(pcb_) : 0; }

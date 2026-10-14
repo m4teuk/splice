@@ -8,7 +8,7 @@
 #include <cstring>
 
 #include "common/log.h"
-#include "peer/shell.h"
+#include "peer/exec.h"
 
 namespace spl::peer {
 
@@ -426,10 +426,10 @@ std::string printable(const std::string& s) {
     return out;
 }
 
-std::string offer_kind(const std::string& type) {
+std::string offer_kind(const std::string& type, const std::vector<std::string>& args) {
     if (type == "SHARE_FILE") return "file/1 send";
     if (type == "GET_FILE") return "file/1 recv";
-    if (type == "SHELL") return "shell/1 pty";
+    if (type == "SHELL" || type == "EXEC") return exec_has_pty(type, args) ? "exec/1 pty" : "exec/1";
     return "raw";  // ECHO, PIPE: bytes with no protocol of their own
 }
 
@@ -454,7 +454,8 @@ bool kind_matches(const std::string& remote, const std::string& expect) {
 std::string kind_label(const std::string& kind) {
     if (kind_matches(kind, "file/1 send") && !kind.empty()) return "sends files";
     if (kind_matches(kind, "file/1 recv") && !kind.empty()) return "receives files";
-    if (kind_matches(kind, "shell/1") && !kind.empty()) return "a shell";
+    if (kind_matches(kind, "exec/1 pty") && !kind.empty()) return "a program on a terminal";
+    if (kind_matches(kind, "exec/1") && !kind.empty()) return "runs a command";
     if (kind == "raw") return "a raw pipe";
     return kind.empty() ? "unknown (an older spl)" : kind;
 }
@@ -464,8 +465,9 @@ std::string kind_usage(const std::string& kind, const std::string& peer, const s
     if (kind_matches(kind, "file/1 send")) return "spl get " + peer + " " + name;
     if (kind_matches(kind, "file/1 recv"))
         return "spl send " + peer + " <path>" + (name == "inbox" ? "" : " --name " + name);
-    if (kind_matches(kind, "shell/1"))
+    if (kind_matches(kind, "exec/1 pty"))
         return "spl shell " + peer + (name == "shell" ? "" : " --name " + name);
+    if (kind_matches(kind, "exec/1")) return "spl run " + peer + " " + name;
     if (kind == "raw") return name == "chat" ? "spl chat " + peer : "spl pipe open " + peer + " " + name;
     return "";
 }
@@ -495,7 +497,7 @@ std::unique_ptr<LocalEnd> make_local_end(const std::string& type,
         }
         return std::make_unique<GetFileEnd>(args[0], args.size() == 2);
     }
-    if (type == "SHELL") return make_shell_end(args, err);
+    if (type == "SHELL" || type == "EXEC") return make_exec_end(type, args, err);
     if (err) *err = "unknown pipe type '" + type + "'";
     return nullptr;
 }

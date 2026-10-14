@@ -1,4 +1,5 @@
-// A minimal poll(2) event loop: readable-fd callbacks plus a per-round tick.
+// A minimal poll(2) event loop: readable- or writable-fd callbacks plus a
+// per-round tick.
 // Owned by whoever runs the process's loop (today the peer commands via
 // PeerRuntime; the daemon later). Callbacks may add/remove fds, including
 // removing themselves.
@@ -15,7 +16,9 @@ namespace spl::net {
 
 class Poller {
  public:
-    void set(int fd, std::function<void()> on_readable);  // add or replace
+    // Add or replace `fd`'s callback: called when it's readable (or, with
+    // `writable`, when it can be written), and on hangup/error either way.
+    void set(int fd, std::function<void()> on_ready, bool writable = false);
     void remove(int fd);
 
     // Poll until `stop` becomes true. Each round waits at most 100ms, invokes
@@ -23,7 +26,12 @@ class Poller {
     void run(std::atomic<bool>& stop, const std::function<void(Millis)>& on_tick);
 
  private:
-    std::vector<std::pair<int, std::function<void()>>> fds_;
+    struct Entry {
+        int fd;
+        bool writable;
+        std::function<void()> cb;
+    };
+    std::vector<Entry> fds_;
 };
 
 }  // namespace spl::net
