@@ -468,7 +468,7 @@ int do_config() {
                 config_exists() ? "" : "  (does not exist yet)");
     std::printf("[peer]   addr = %s   port = %u   (relay for pair/serve/get/chat/…)\n",
                 c.peer.addr.empty() ? "(default: splice.kussowski.dev)" : c.peer.addr.c_str(),
-                c.peer.port ? c.peer.port : 443);
+                c.peer.port ? c.peer.port : 3478);
     std::printf("         lan_port = %u%s   (LAN discovery + local pairing listen here)\n",
                 c.lan_port ? c.lan_port : kLanDiscoPort, c.lan_port ? "" : " (default)");
     std::printf("[server] addr = %s   port = %u   (only when running `spl server`)\n",

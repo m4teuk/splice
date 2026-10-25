@@ -8,7 +8,7 @@
 //   port = 7777
 //   [peer]
 //   addr = splice.kussowski.dev
-//   port = 443
+//   port = 3478
 //   lan_port = 7702      (where this machine listens for LAN discovery / local pairing)
 #pragma once
 

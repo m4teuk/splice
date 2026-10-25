@@ -70,7 +70,7 @@ the code then starts with `L`, and if the other device isn't on the same network
 
 Each side names the other, then compares public keys before accepting (the
 prompt can verify a pasted key or copy yours to the clipboard). By default both
-use the public relay `splice.kussowski.dev:443`; point them at your own with
+use the public relay `splice.kussowski.dev:3478`; point them at your own with
 `--server`/`--port` or a config file (below).
 
 **2. Move data.** Pull, push, or talk:
@@ -156,7 +156,7 @@ section so the client commands don't need `--server`/`--port`:
 ```ini
 [peer]                   # relay for pair / chat / serve / get / the daemon
 addr = splice.kussowski.dev   # defaults to this public relay
-port = 443
+port = 3478
 lan_port = 7702          # where this machine listens for local discovery/pairing
 ```
 

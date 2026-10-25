@@ -1,7 +1,7 @@
 # Deploying a splice relay server
 
 A production relay is a single binary run by systemd as an unprivileged user,
-binding `:443` (TCP for pairing + UDP for the relay/hole-punch) with a real
+binding `:3478` (TCP for pairing + UDP for the relay/hole-punch) with a real
 Let's Encrypt certificate. The host needs **no copy of the source repo** and the
 service **never runs as root** and **never reads the private key directly**.
 
@@ -40,7 +40,7 @@ everyone, which is fine (the binary holds no secrets). Nothing else is shared.
 ## 2. Get a certificate
 
 `certbot --standalone` answers the ACME challenge on **port 80** (HTTP-01), so it
-does **not** clash with splice on 443. Make sure port 80 is free during issuance.
+does **not** clash with splice on 3478. Make sure port 80 is free during issuance.
 
 ```sh
 sudo certbot certonly --standalone -d splice.kussowski.dev \
@@ -63,13 +63,13 @@ sudo cp deploy/splice.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now splice
 systemctl status splice
-journalctl -u splice -f          # 'splice server up: pairing tcp/443, relay udp/443'
+journalctl -u splice -f          # 'splice server up: pairing tcp/3478, relay udp/3478'
 ```
 
 How the unit solves the two hard parts:
 
 - **Privileged port without root** — `AmbientCapabilities=CAP_NET_BIND_SERVICE`
-  lets the unprivileged process bind 443 (covers both the TCP and UDP binds).
+  lets the unprivileged process bind a port below 1024, e.g. 443, should you pick one (3478 doesn't need it).
 - **Cert access without exposing the key** — `LoadCredential=` makes systemd (root)
   copy `fullchain.pem`/`privkey.pem` into a per-service tmpfs readable only by the
   service; `ExecStart` points `--cert %d/cert --key %d/key` at them (`%d` =
@@ -81,8 +81,8 @@ a transient unprivileged user for the lifetime of the service.
 ## 4. Open the firewall
 
 ```sh
-sudo ufw allow 443/tcp     # pairing (TLS)
-sudo ufw allow 443/udp     # relay + whereami + hole-punch
+sudo ufw allow 3478/tcp     # pairing (TLS)
+sudo ufw allow 3478/udp     # relay + whereami + hole-punch
 ```
 
 ## 5. Automatic renewal
@@ -101,7 +101,7 @@ systemctl list-timers certbot.timer
 Clients now reach a properly authenticated server (no `--insecure`):
 
 ```sh
-spl pair --server splice.kussowski.dev --port 443
+spl pair --server splice.kussowski.dev --port 3478
 ```
 
 …or, in each client's `~/.config/spl/config`:
@@ -109,7 +109,7 @@ spl pair --server splice.kussowski.dev --port 443
 ```ini
 [peer]
 addr = splice.kussowski.dev
-port = 443
+port = 3478
 ```
 
 ## Tuning rate limits (optional)

@@ -1759,7 +1759,7 @@ uint16_t own_lan_port() {
 }
 
 DaemonOpts default_daemon_opts() {
-    DaemonOpts o{"splice.kussowski.dev", 443};
+    DaemonOpts o{"splice.kussowski.dev", 3478};
     Config c = load_config();
     if (!c.peer.addr.empty()) o.server = c.peer.addr;
     if (c.peer.port) o.port = c.peer.port;

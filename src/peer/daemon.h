@@ -20,7 +20,7 @@ namespace spl::peer {
 
 struct DaemonOpts {
     std::string server;  // rendezvous/relay host
-    uint16_t port = 443;
+    uint16_t port = 3478;
     bool sticky = false;  // `spl start`: run until stopped. Auto-started daemons
                           // (from other commands) auto-stop once idle.
 };
